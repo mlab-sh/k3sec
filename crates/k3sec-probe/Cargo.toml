@@ -1,0 +1,24 @@
+[package]
+name = "k3sec-probe"
+description = "k3sec eBPF runtime probe: kernel-sourced exec/connect/file-write events as SecEvents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+k3sec-core.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[features]
+# Enables the real aya-based eBPF probe (Linux only). Without it, the probe
+# source compiles everywhere but returns a clear "unavailable" error at runtime.
+# The aya dependencies and build script are wired in under this feature in M2/Phase 1.
+ebpf = []

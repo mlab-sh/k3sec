@@ -1,0 +1,28 @@
+[package]
+name = "k3sec"
+description = "Runtime security CLI for k3s clusters — live k8s + eBPF event streaming"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "k3sec"
+path = "src/main.rs"
+
+[dependencies]
+k3sec-core.workspace = true
+k3sec-k8s.workspace = true
+k3sec-probe.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+# Build the real eBPF probe into the CLI (Linux only). See k3sec-probe.
+ebpf = ["k3sec-probe/ebpf"]
