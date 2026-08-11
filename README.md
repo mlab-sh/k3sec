@@ -21,8 +21,8 @@ engine (M3: rules + yara-x) can plug into the same stream later.
 ## Status
 
 - **M1** — live k8s events & pod logs, pretty/JSON output. ✅
-- **M2** — eBPF runtime probe. Workspace refactor + realtime default: ✅.
-  Probe implementation: **in progress** (build with `--features ebpf` on Linux).
+- **M2** — eBPF runtime probe: `exec` / `connect` / `file_write`, pod-enriched,
+  via a ring buffer with in-kernel filtering. ✅ (build with `--features ebpf`).
 - **M3** — detection rules + yara-x. Planned.
 
 ## Install
@@ -36,13 +36,22 @@ cargo build --release
 # binary at ./target/release/k3sec
 ```
 
-The eBPF probe is Linux-only and behind a feature flag (extra kernel-side build
-tooling); a normal build has everything except `--ebpf`:
+The eBPF probe is Linux-only and behind a feature flag. Building it needs a
+nightly toolchain (to cross-compile the kernel program) and `bpf-linker`:
 
 ```bash
-# On a Linux node, with the probe compiled in:
+# One-time toolchain setup on the node (Linux, kernel 6.x, BTF enabled):
+rustup toolchain install nightly
+rustup component add rust-src --toolchain nightly
+cargo install bpf-linker        # needs LLVM (apt install llvm clang)
+
+# Build with the probe compiled in:
 cargo build --release --features ebpf
 ```
+
+The kernel program lives in `crates/k3sec-probe-ebpf` (its own standalone
+workspace); `k3sec-probe`'s build script compiles it via `aya-build`. A normal
+host build (no `--features ebpf`) never touches any of this.
 
 ## Usage
 

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::{EventSource, OutputFormat, Printer};
-use k3sec_k8s::{build_client, preflight, K8sEventSource, K8sLogSource};
+use k3sec_k8s::{build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver};
 use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
 
 /// k3sec — runtime security for k3s clusters.
@@ -49,6 +49,11 @@ pub struct WatchArgs {
     #[arg(long, value_enum, value_delimiter = ',', value_name = "KIND")]
     pub kind: Vec<ProbeKind>,
 
+    /// Node name to scope pod resolution for --ebpf (defaults to $NODE_NAME,
+    /// else all pods). Matched against `spec.nodeName`.
+    #[arg(long, value_name = "NAME")]
+    pub node: Option<String>,
+
     /// Replay the existing backlog (k8s events, sorted by time) before going
     /// live. Off by default: k3sec is realtime-only.
     #[arg(long)]
@@ -71,6 +76,9 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         tracing::warn!("--kind has no effect without --ebpf; ignoring it");
     }
 
+    // Established up-front so shutdown (and the pod resolver) share one signal.
+    let cancel = CancellationToken::new();
+
     // Establish and validate the connection up-front so kubeconfig/RBAC errors
     // are reported clearly before any long-running watch starts.
     let client = build_client(kubeconfig.as_deref()).await?;
@@ -90,10 +98,17 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         )));
     }
     if args.ebpf {
+        // The resolver watches pods (scoped to this node) so kernel events can
+        // be tagged with pod/namespace context.
+        let node = args
+            .node
+            .clone()
+            .or_else(|| std::env::var("NODE_NAME").ok());
+        let resolver = NodePodResolver::spawn(client.clone(), node, cancel.clone());
         let config = ProbeConfig {
             kinds: KindFilter::new(args.kind.clone()),
         };
-        sources.push(Box::new(EbpfSource::new(config)));
+        sources.push(Box::new(EbpfSource::new(config, resolver)));
     }
 
     tracing::info!(
@@ -110,7 +125,6 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     // concurrent events and log lines never interleave mid-line.
     let (tx, mut rx) = mpsc::channel(1024);
     let printer = Printer::new(args.output);
-    let cancel = CancellationToken::new();
 
     let printer_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {

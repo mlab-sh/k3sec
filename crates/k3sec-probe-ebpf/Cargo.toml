@@ -1,0 +1,20 @@
+[package]
+name = "k3sec-probe-ebpf"
+version = "0.2.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+# Bin name MUST differ from the package name: aya-build uses out/<pkg> as the
+# build target-dir and copies the artifact to out/<bin>; identical names collide.
+[[bin]]
+name = "k3sec-bpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.1"
+k3sec-probe-common = { path = "../k3sec-probe-common" }
+
+# NOTE: no [workspace] table and no [profile]/[.cargo/config] here — this crate
+# is a member of the parent workspace, and aya-build drives its BPF-target
+# build (nightly, -Z build-std=core, --release, target + rustflags) itself.

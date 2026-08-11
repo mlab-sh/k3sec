@@ -13,12 +13,22 @@ k3sec-core.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 tokio-util.workspace = true
 tracing.workspace = true
+
+# eBPF userspace loader deps — only pulled in with the `ebpf` feature (Linux).
+aya = { version = "0.13", optional = true }
+k3sec-probe-common = { path = "../k3sec-probe-common", optional = true }
+chrono = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# aya-build compiles the kernel crate from build.rs. Gated to Linux so a macOS
+# host build never needs it; only actually runs the eBPF build under `ebpf`.
+[target.'cfg(target_os = "linux")'.build-dependencies]
+aya-build = "0.1"
 
 [features]
 # Enables the real aya-based eBPF probe (Linux only). Without it, the probe
 # source compiles everywhere but returns a clear "unavailable" error at runtime.
-# The aya dependencies and build script are wired in under this feature in M2/Phase 1.
-ebpf = []
+ebpf = ["dep:aya", "dep:k3sec-probe-common", "dep:chrono", "dep:serde_json"]

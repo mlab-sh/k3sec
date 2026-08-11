@@ -1,0 +1,15 @@
+[package]
+name = "k3sec-probe-common"
+description = "Shared repr(C) types passed from the k3sec eBPF programs to userspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# no_std, no dependencies — these types compile for both the BPF target and the
+# host loader.
+
+[lib]
+path = "src/lib.rs"

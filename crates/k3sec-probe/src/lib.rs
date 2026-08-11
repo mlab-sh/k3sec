@@ -10,11 +10,13 @@
 //! feature, [`EbpfSource::run`] returns a clear error instead of failing to
 //! build — so the rest of the workspace stays buildable everywhere.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::{EventSink, EventSource};
+use k3sec_core::{ContainerResolver, EventSink, EventSource};
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 mod linux;
@@ -79,11 +81,13 @@ pub struct ProbeConfig {
 /// The eBPF [`EventSource`]. See the module docs for platform/feature gating.
 pub struct EbpfSource {
     config: ProbeConfig,
+    resolver: Arc<dyn ContainerResolver>,
 }
 
 impl EbpfSource {
-    pub fn new(config: ProbeConfig) -> Self {
-        Self { config }
+    /// `resolver` attaches pod/namespace context to each kernel event.
+    pub fn new(config: ProbeConfig, resolver: Arc<dyn ContainerResolver>) -> Self {
+        Self { config, resolver }
     }
 }
 
@@ -94,18 +98,24 @@ impl EventSource for EbpfSource {
     }
 
     async fn run(self: Box<Self>, sink: EventSink, cancel: CancellationToken) -> Result<()> {
-        run_probe(self.config, sink, cancel).await
+        run_probe(self.config, self.resolver, sink, cancel).await
     }
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
-async fn run_probe(config: ProbeConfig, sink: EventSink, cancel: CancellationToken) -> Result<()> {
-    linux::run(config, sink, cancel).await
+async fn run_probe(
+    config: ProbeConfig,
+    resolver: Arc<dyn ContainerResolver>,
+    sink: EventSink,
+    cancel: CancellationToken,
+) -> Result<()> {
+    linux::run(config, resolver, sink, cancel).await
 }
 
 #[cfg(not(all(target_os = "linux", feature = "ebpf")))]
 async fn run_probe(
     _config: ProbeConfig,
+    _resolver: Arc<dyn ContainerResolver>,
     _sink: EventSink,
     _cancel: CancellationToken,
 ) -> Result<()> {

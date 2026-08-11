@@ -27,11 +27,14 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      # Default members only (excludes k3sec-probe-ebpf, which builds for the BPF
+      # target). --all-features is avoided on purpose: the `ebpf` feature needs a
+      # nightly BPF toolchain + bpf-linker that CI doesn't provide.
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build --all-targets
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test

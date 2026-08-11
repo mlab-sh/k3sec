@@ -7,10 +7,14 @@
 //! The output pipeline consumes [`SecEvent`]s and knows nothing about where they
 //! came from: Kubernetes events, pod logs, or (from M2) the eBPF probe.
 
+pub mod cgroup;
 pub mod event;
 pub mod output;
+pub mod resolver;
 pub mod source;
 
+pub use cgroup::container_id_from_cgroup;
 pub use event::{SecEvent, SecEventBuilder, Severity, Source};
 pub use output::{OutputFormat, Printer};
+pub use resolver::{ContainerInfo, ContainerResolver};
 pub use source::{EventSink, EventSource};

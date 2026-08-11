@@ -5,10 +5,20 @@ members = [
     "crates/k3sec-core",
     "crates/k3sec-k8s",
     "crates/k3sec-probe",
+    "crates/k3sec-probe-common",
+    "crates/k3sec-probe-ebpf",
 ]
-# The eBPF (kernel) crate builds for the `bpfel-unknown-none` target and is not
-# a normal workspace member; it is compiled by k3sec-probe's build script.
-exclude = ["crates/k3sec-probe/k3sec-probe-ebpf"]
+# k3sec-probe-ebpf must be a member so aya-build's `cargo build --package
+# k3sec-probe-ebpf` can find it — but it only ever builds for the BPF target
+# (via k3sec-probe's build script). Keeping it out of `default-members` means a
+# normal host `cargo build`/`clippy`/`test` never tries to compile it.
+default-members = [
+    "crates/k3sec",
+    "crates/k3sec-core",
+    "crates/k3sec-k8s",
+    "crates/k3sec-probe",
+    "crates/k3sec-probe-common",
+]
 
 [workspace.package]
 version = "0.2.0"

@@ -9,7 +9,9 @@
 pub mod client;
 pub mod events;
 pub mod logs;
+pub mod resolver;
 
 pub use client::{build_client, preflight, Backoff};
 pub use events::K8sEventSource;
 pub use logs::K8sLogSource;
+pub use resolver::NodePodResolver;
