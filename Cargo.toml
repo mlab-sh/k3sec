@@ -3,18 +3,20 @@ resolver = "2"
 members = [
     "crates/k3sec",
     "crates/k3sec-core",
+    "crates/k3sec-engine",
     "crates/k3sec-k8s",
     "crates/k3sec-probe",
     "crates/k3sec-probe-common",
     "crates/k3sec-probe-ebpf",
 ]
 # k3sec-probe-ebpf must be a member so aya-build's `cargo build --package
-# k3sec-probe-ebpf` can find it — but it only ever builds for the BPF target
+# k3sec-probe-ebpf` can find it, but it only ever builds for the BPF target
 # (via k3sec-probe's build script). Keeping it out of `default-members` means a
 # normal host `cargo build`/`clippy`/`test` never tries to compile it.
 default-members = [
     "crates/k3sec",
     "crates/k3sec-core",
+    "crates/k3sec-engine",
     "crates/k3sec-k8s",
     "crates/k3sec-probe",
     "crates/k3sec-probe-common",
@@ -24,11 +26,12 @@ default-members = [
 version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/Sn0wAlice/k3sec"
-rust-version = "1.82"
+repository = "https://github.com/mlab-sh/k3sec"
+rust-version = "1.85"
 
 [workspace.dependencies]
 k3sec-core = { path = "crates/k3sec-core" }
+k3sec-engine = { path = "crates/k3sec-engine" }
 k3sec-k8s = { path = "crates/k3sec-k8s" }
 k3sec-probe = { path = "crates/k3sec-probe" }
 

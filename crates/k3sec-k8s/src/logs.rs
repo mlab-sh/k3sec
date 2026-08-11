@@ -26,7 +26,7 @@ use k3sec_core::{EventSink, EventSource, SecEvent, Severity, Source};
 
 /// Follows logs from every started container across one namespace or all of them.
 ///
-/// Logs are always realtime (only new lines, no historical replay) — `--rollback`
+/// Logs are always realtime (only new lines, no historical replay), `--rollback`
 /// affects Kubernetes events, not logs.
 pub struct K8sLogSource {
     client: Client,

@@ -1,4 +1,4 @@
-//! k3sec — runtime security CLI for k3s clusters.
+//! k3sec, runtime security CLI for k3s clusters.
 //!
 //! Connects to a cluster and streams normalized security events to the terminal
 //! (pretty or NDJSON): Kubernetes events, pod logs (`--logs`), and kernel-level

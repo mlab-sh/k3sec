@@ -1,0 +1,21 @@
+[package]
+name = "k3sec-engine"
+description = "k3sec detection engine: YARA (yara-x) scanning of eBPF-surfaced artifacts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+k3sec-core.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+yara-x = "1"
+flume = "0.12"
+walkdir = "2.5.0"

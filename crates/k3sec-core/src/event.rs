@@ -1,7 +1,7 @@
 //! Generic security-event envelope.
 //!
-//! Every observation k3sec makes — a Kubernetes `Event`, a pod log line, and
-//! later an eBPF syscall alert — is normalized into a [`SecEvent`]. The schema
+//! Every observation k3sec makes, a Kubernetes `Event`, a pod log line, and
+//! later an eBPF syscall alert, is normalized into a [`SecEvent`]. The schema
 //! is intentionally source-agnostic:
 //!
 //! ```text
@@ -32,8 +32,10 @@ pub enum Source {
     K8sEvent,
     /// A single log line streamed from a pod container.
     K8sLog,
-    /// Reserved for eBPF-sourced events (later milestone).
+    /// An eBPF-sourced runtime event (exec / connect / file write).
     Ebpf,
+    /// A YARA detection produced by the scan engine.
+    Yara,
 }
 
 /// Normalized severity, comparable across sources.

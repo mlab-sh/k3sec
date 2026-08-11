@@ -28,9 +28,9 @@ pub mod af {
 /// A single kernel event. Fixed size for simple, fast ring-buffer transport.
 ///
 /// Field relevance by `kind`:
-/// * `exec`       — `comm`, `filename` (the executed binary), pid/uid/cgroup.
-/// * `connect`    — `daddr`, `dport`, `af`, pid/uid/cgroup.
-/// * `file_write` — `filename` (the opened path), pid/uid/cgroup.
+/// * `exec`: `comm`, `filename` (the executed binary), pid/uid/cgroup.
+/// * `connect`: `daddr`, `dport`, `af`, pid/uid/cgroup.
+/// * `file_write`: `filename` (the opened path), pid/uid/cgroup.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Event {
@@ -39,7 +39,7 @@ pub struct Event {
     pub pid: u32,
     pub uid: u32,
     pub _pad: u32,
-    /// Kernel cgroup id (v2 inode) of the process — a stable per-container key.
+    /// Kernel cgroup id (v2 inode) of the process, a stable per-container key.
     pub cgroup_id: u64,
     /// NUL-padded thread name.
     pub comm: [u8; COMM_LEN],

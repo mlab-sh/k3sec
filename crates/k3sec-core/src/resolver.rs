@@ -1,7 +1,7 @@
 //! Container → pod resolution.
 //!
 //! The eBPF probe observes kernel events tagged with a pid / cgroup, but a raw
-//! pid is nearly useless for security triage — the value is knowing *which pod*
+//! pid is nearly useless for security triage, the value is knowing *which pod*
 //! did it. A [`ContainerResolver`] maps a container runtime ID (the 64-hex id
 //! that appears in a cgroup path) to the pod that owns it.
 //!
@@ -22,7 +22,7 @@ pub trait ContainerResolver: Send + Sync {
     /// Look up by container runtime ID (bare 64-hex, no `containerd://` prefix).
     ///
     /// Returns `None` if the id is unknown (not yet synced, host process, or a
-    /// container that already exited) — callers must treat that as "no pod
+    /// container that already exited), callers must treat that as "no pod
     /// context" and never block on it.
     async fn by_container_id(&self, container_id: &str) -> Option<ContainerInfo>;
 }

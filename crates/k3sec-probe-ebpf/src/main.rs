@@ -2,12 +2,12 @@
 //!
 //! Three hooks, each filling one fixed-size [`Event`] into the `EVENTS` ring
 //! buffer:
-//! * `execve`      — `syscalls:sys_enter_execve` (executed binary).
-//! * `connect`     — kprobes on `tcp_v4_connect` / `tcp_v6_connect` (dest ip:port).
-//! * `file_write`  — `syscalls:sys_enter_openat`, filtered in-kernel to *write*
+//! * `execve`     , `syscalls:sys_enter_execve` (executed binary).
+//! * `connect`    , kprobes on `tcp_v4_connect` / `tcp_v6_connect` (dest ip:port).
+//! * `file_write` , `syscalls:sys_enter_openat`, filtered in-kernel to *write*
 //!   opens under sensitive paths, so userspace never sees the firehose.
 //!
-//! On ring-buffer backpressure we bump `DROPS` and return cleanly — never block,
+//! On ring-buffer backpressure we bump `DROPS` and return cleanly, never block,
 //! never panic on event data.
 
 #![no_std]
@@ -239,7 +239,7 @@ fn bump_drops() {
     }
 }
 
-/// GPL license — required for the tracepoint/kprobe + `bpf_probe_read` helpers.
+/// GPL license, required for the tracepoint/kprobe + `bpf_probe_read` helpers.
 #[no_mangle]
 #[link_section = "license"]
 static LICENSE: [u8; 4] = *b"GPL\0";

@@ -2,7 +2,7 @@
 //! that `linux.rs` embeds via `include_bytes_aligned!`.
 //!
 //! Only runs when the `ebpf` feature is enabled (`CARGO_FEATURE_EBPF`), and only
-//! on Linux — a plain host build compiles nothing here. aya-build drives the
+//! on Linux, a plain host build compiles nothing here. aya-build drives the
 //! BPF-target build (nightly, build-std, target, rustflags) itself.
 
 fn main() {

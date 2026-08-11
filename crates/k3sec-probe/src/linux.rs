@@ -5,7 +5,7 @@
 //! (via the process cgroup → container id → [`ContainerResolver`]) and turned
 //! into a [`SecEvent`]. Everything here is best-effort: a malformed record, a
 //! full ring buffer, or an unresolved cgroup increments a counter and is dropped
-//! — the reader never blocks and never panics on event data.
+//!, the reader never blocks and never panics on event data.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,8 +19,8 @@ use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::{
-    container_id_from_cgroup, ContainerInfo, ContainerResolver, EventSink, SecEvent, Severity,
-    Source,
+    container_id_from_cgroup, ContainerInfo, ContainerResolver, EventSink, ScanRequest,
+    ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
 };
 use k3sec_probe_common::{af, kind, Event, COMM_LEN, FILENAME_LEN};
 
@@ -40,6 +40,7 @@ struct DropStats {
 pub async fn run(
     config: ProbeConfig,
     resolver: Arc<dyn ContainerResolver>,
+    scan_tx: Option<ScanRequestSink>,
     sink: EventSink,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -87,7 +88,9 @@ pub async fn run(
                 guard.clear_ready();
 
                 for ev in batch {
-                    if let Some(sec) = build_event(&ev, &config, resolver.as_ref(), &stats).await {
+                    if let Some(sec) =
+                        build_event(&ev, &config, resolver.as_ref(), scan_tx.as_ref(), &stats).await
+                    {
                         if sink.send(sec).await.is_err() {
                             return Ok(()); // printer gone
                         }
@@ -152,6 +155,7 @@ async fn build_event(
     ev: &Event,
     config: &ProbeConfig,
     resolver: &dyn ContainerResolver,
+    scan_tx: Option<&ScanRequestSink>,
     stats: &DropStats,
 ) -> Option<SecEvent> {
     let probe_kind = match ev.kind {
@@ -168,7 +172,7 @@ async fn build_event(
     }
 
     // Resolve pod context from the process cgroup. Host processes (no container
-    // id) are dropped — this is a pod-scoped tool.
+    // id) are dropped, this is a pod-scoped tool.
     let container_id = read_container_id(ev.pid);
     let Some(container_id) = container_id else {
         stats.host.fetch_add(1, Ordering::Relaxed);
@@ -180,6 +184,12 @@ async fn build_event(
     }
 
     let comm = cstr(&ev.comm[..COMM_LEN]);
+
+    // Fire off a scan request (best-effort, non-blocking) for scannable kinds.
+    if let Some(scan_tx) = scan_tx {
+        maybe_request_scan(scan_tx, ev, probe_kind, &comm, info.as_ref());
+    }
+
     let (kind_str, severity, message) = match probe_kind {
         ProbeKind::Exec => {
             let bin = cstr(&ev.filename[..FILENAME_LEN]);
@@ -218,6 +228,37 @@ async fn build_event(
 
     builder = builder.payload(payload(ev, probe_kind, &container_id, info.as_ref()));
     Some(builder.build())
+}
+
+/// Enqueue a scan for exec/file_write events; never blocks event capture.
+fn maybe_request_scan(
+    scan_tx: &ScanRequestSink,
+    ev: &Event,
+    probe_kind: ProbeKind,
+    comm: &str,
+    info: Option<&ContainerInfo>,
+) {
+    let trigger = match probe_kind {
+        ProbeKind::Exec => ScanTrigger::Exec,
+        ProbeKind::FileWrite => ScanTrigger::FileWrite,
+        ProbeKind::Connect => return, // no bytes to scan
+    };
+    let path =
+        matches!(probe_kind, ProbeKind::FileWrite).then(|| cstr(&ev.filename[..FILENAME_LEN]));
+
+    let req = ScanRequest {
+        trigger,
+        pid: ev.pid,
+        path,
+        container: info.cloned(),
+        comm: comm.to_string(),
+    };
+
+    // Non-blocking: if the scan queue is full we drop the request rather than
+    // stall event capture, a dropped scan is cheaper than a blocked probe.
+    if scan_tx.try_send(req).is_err() {
+        tracing::debug!("scan queue full or closed; dropping scan request");
+    }
 }
 
 /// Read `/proc/<pid>/cgroup` and extract the container id, if any.

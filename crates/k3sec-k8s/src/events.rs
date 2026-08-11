@@ -1,11 +1,11 @@
 //! Live watch of core/v1 `Event` objects, as an [`EventSource`].
 //!
-//! Uses the Kubernetes watch API (via `kube::runtime::watcher`) — no polling.
+//! Uses the Kubernetes watch API (via `kube::runtime::watcher`), no polling.
 //! The watcher recovers from dropped connections on its own; we wrap it in an
 //! additional backoff loop so a hard failure reconnects instead of aborting.
 //!
 //! **Realtime by default.** k3sec is a detection tool, not a history viewer, so
-//! the initial `LIST` backlog the watcher replays is *dropped* — only changes
+//! the initial `LIST` backlog the watcher replays is *dropped*, only changes
 //! that happen after we connect are emitted. With `rollback = true` the existing
 //! backlog is replayed once (sorted by timestamp) before switching to live.
 

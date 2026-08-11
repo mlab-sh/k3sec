@@ -4,7 +4,7 @@
 //! events watch, the pod-log follower, or the eBPF probe. Each one runs its own
 //! collection loop and pushes events into a shared [`EventSink`]; a single
 //! printer task drains that sink. This keeps the output pipeline completely
-//! source-agnostic — adding a new source never touches rendering.
+//! source-agnostic, adding a new source never touches rendering.
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

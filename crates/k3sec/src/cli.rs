@@ -8,11 +8,12 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::{EventSource, OutputFormat, Printer};
+use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
+use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_k8s::{build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver};
 use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
 
-/// k3sec — runtime security for k3s clusters.
+/// k3sec, runtime security for k3s clusters.
 #[derive(Debug, Parser)]
 #[command(name = "k3sec", version, about, long_about = None)]
 pub struct Cli {
@@ -59,6 +60,20 @@ pub struct WatchArgs {
     #[arg(long)]
     pub rollback: bool,
 
+    /// YARA rules: a `.yar`/`.yara` file or a directory (scanned recursively).
+    /// Enables scanning of exec'd binaries and writes to sensitive paths.
+    /// Requires --ebpf.
+    #[arg(long, value_name = "PATH")]
+    pub rules: Option<PathBuf>,
+
+    /// Skip scanning artifacts larger than this many bytes.
+    #[arg(long, value_name = "BYTES", default_value_t = EngineConfig::DEFAULT_MAX_SCAN_SIZE)]
+    pub max_scan_size: u64,
+
+    /// YARA scan worker threads (default: number of CPUs).
+    #[arg(long, value_name = "N")]
+    pub scan_workers: Option<usize>,
+
     /// Output format.
     #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::default())]
     pub output: OutputFormat,
@@ -75,9 +90,30 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     if !args.kind.is_empty() && !args.ebpf {
         tracing::warn!("--kind has no effect without --ebpf; ignoring it");
     }
+    if args.rules.is_some() && !args.ebpf {
+        tracing::warn!("--rules has no effect without --ebpf; scanning is driven by eBPF events");
+    }
 
     // Established up-front so shutdown (and the pod resolver) share one signal.
     let cancel = CancellationToken::new();
+
+    // Compile the YARA ruleset FIRST (local, cheap): a bad ruleset must fail
+    // fast before we touch the cluster. `scan_tx` is handed to the probe; the
+    // engine (in `engine_slot`) is spawned once the printer sink exists.
+    let mut engine_slot: Option<(DetectionEngine, mpsc::Receiver<ScanRequest>)> = None;
+    let scan_tx = if args.ebpf && args.rules.is_some() {
+        let rules_path = args.rules.clone().expect("checked is_some");
+        let workers = args
+            .scan_workers
+            .unwrap_or_else(EngineConfig::default_workers);
+        let engine =
+            DetectionEngine::compile(&rules_path, EngineConfig::new(args.max_scan_size, workers))?;
+        let (stx, srx) = mpsc::channel::<ScanRequest>(1024);
+        engine_slot = Some((engine, srx));
+        Some(stx)
+    } else {
+        None
+    };
 
     // Establish and validate the connection up-front so kubeconfig/RBAC errors
     // are reported clearly before any long-running watch starts.
@@ -108,13 +144,14 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         let config = ProbeConfig {
             kinds: KindFilter::new(args.kind.clone()),
         };
-        sources.push(Box::new(EbpfSource::new(config, resolver)));
+        sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
     }
 
     tracing::info!(
         namespace = args.namespace.as_deref().unwrap_or("<all>"),
         logs = args.logs,
         ebpf = args.ebpf,
+        rules = args.rules.is_some(),
         rollback = args.rollback,
         output = ?args.output,
         sources = sources.len(),
@@ -130,6 +167,18 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         while let Some(event) = rx.recv().await {
             printer.emit(&event);
         }
+    });
+
+    // Spawn the YARA engine (if enabled): it drains scan requests and emits
+    // detection events into the same sink.
+    let engine_handle = engine_slot.map(|(engine, scan_rx)| {
+        let tx = tx.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine.run(scan_rx, tx, cancel).await {
+                tracing::error!("detection engine failed: {e:#}");
+            }
+        })
     });
 
     // Run every source concurrently into the shared sink.
@@ -155,6 +204,10 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
 
     let shutdown = async {
         for handle in source_handles {
+            let _ = handle.await;
+        }
+        // Sources are gone (probe dropped its scan sender); the engine drains and exits.
+        if let Some(handle) = engine_handle {
             let _ = handle.await;
         }
         // Remaining sender clones are now dropped; the printer drains and returns.

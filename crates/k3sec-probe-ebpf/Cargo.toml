@@ -15,6 +15,6 @@ path = "src/main.rs"
 aya-ebpf = "0.1"
 k3sec-probe-common = { path = "../k3sec-probe-common" }
 
-# NOTE: no [workspace] table and no [profile]/[.cargo/config] here — this crate
+# NOTE: no [workspace] table and no [profile]/[.cargo/config] here, this crate
 # is a member of the parent workspace, and aya-build drives its BPF-target
 # build (nightly, -Z build-std=core, --release, target + rustflags) itself.

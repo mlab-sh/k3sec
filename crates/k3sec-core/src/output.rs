@@ -1,8 +1,8 @@
 //! Rendering of [`SecEvent`]s to the terminal.
 //!
 //! Two formats:
-//! * [`OutputFormat::Pretty`] — human-readable, colored, one line per event.
-//! * [`OutputFormat::Json`]   — NDJSON, one event per line, stable schema.
+//! * [`OutputFormat::Pretty`], human-readable, colored, one line per event.
+//! * [`OutputFormat::Json`]  , NDJSON, one event per line, stable schema.
 //!
 //! A single [`Printer`] owns stdout so that concurrent producers (the events
 //! watch and each pod-log task) never interleave a half-written line. All
@@ -79,7 +79,13 @@ impl Printer {
         let time = time.dimmed().to_string();
         let badge = colorize_severity(&badge, ev.severity);
         let location = location.bold().to_string();
-        format!("{time}  {badge}  {location}  {}", ev.message)
+        // Make high-severity lines (e.g. YARA detections) pop: red message too.
+        let message = if ev.severity >= Severity::Error {
+            ev.message.red().bold().to_string()
+        } else {
+            ev.message.clone()
+        };
+        format!("{time}  {badge}  {location}  {message}")
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "k3sec"
-description = "Runtime security CLI for k3s clusters — live k8s + eBPF event streaming"
+description = "Runtime security CLI for k3s clusters, live k8s + eBPF event streaming"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 k3sec-core.workspace = true
+k3sec-engine.workspace = true
 k3sec-k8s.workspace = true
 k3sec-probe.workspace = true
 

@@ -1,14 +1,14 @@
-//! k3sec-probe — the eBPF runtime [`EventSource`].
+//! k3sec-probe, the eBPF runtime [`EventSource`].
 //!
-//! Observes what processes actually do inside containers — `execve`, outbound
-//! `connect`, and writes to sensitive paths — straight from the kernel, then
+//! Observes what processes actually do inside containers, `execve`, outbound
+//! `connect`, and writes to sensitive paths, straight from the kernel, then
 //! enriches each event with the pod/namespace it came from and emits a
 //! [`SecEvent`](k3sec_core::SecEvent).
 //!
 //! The real probe (aya + a BPF ring buffer) is Linux-only and gated behind the
-//! `ebpf` cargo feature. This crate always *compiles* — on macOS, or without the
+//! `ebpf` cargo feature. This crate always *compiles*, on macOS, or without the
 //! feature, [`EbpfSource::run`] returns a clear error instead of failing to
-//! build — so the rest of the workspace stays buildable everywhere.
+//! build, so the rest of the workspace stays buildable everywhere.
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::{ContainerResolver, EventSink, EventSource};
+use k3sec_core::{ContainerResolver, EventSink, EventSource, ScanRequestSink};
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 mod linux;
@@ -82,12 +82,23 @@ pub struct ProbeConfig {
 pub struct EbpfSource {
     config: ProbeConfig,
     resolver: Arc<dyn ContainerResolver>,
+    scan_tx: Option<ScanRequestSink>,
 }
 
 impl EbpfSource {
     /// `resolver` attaches pod/namespace context to each kernel event.
-    pub fn new(config: ProbeConfig, resolver: Arc<dyn ContainerResolver>) -> Self {
-        Self { config, resolver }
+    /// `scan_tx`, if set, receives scan requests for exec/file_write events
+    /// (wired to the YARA engine); `None` disables scanning.
+    pub fn new(
+        config: ProbeConfig,
+        resolver: Arc<dyn ContainerResolver>,
+        scan_tx: Option<ScanRequestSink>,
+    ) -> Self {
+        Self {
+            config,
+            resolver,
+            scan_tx,
+        }
     }
 }
 
@@ -98,7 +109,7 @@ impl EventSource for EbpfSource {
     }
 
     async fn run(self: Box<Self>, sink: EventSink, cancel: CancellationToken) -> Result<()> {
-        run_probe(self.config, self.resolver, sink, cancel).await
+        run_probe(self.config, self.resolver, self.scan_tx, sink, cancel).await
     }
 }
 
@@ -106,16 +117,18 @@ impl EventSource for EbpfSource {
 async fn run_probe(
     config: ProbeConfig,
     resolver: Arc<dyn ContainerResolver>,
+    scan_tx: Option<ScanRequestSink>,
     sink: EventSink,
     cancel: CancellationToken,
 ) -> Result<()> {
-    linux::run(config, resolver, sink, cancel).await
+    linux::run(config, resolver, scan_tx, sink, cancel).await
 }
 
 #[cfg(not(all(target_os = "linux", feature = "ebpf")))]
 async fn run_probe(
     _config: ProbeConfig,
     _resolver: Arc<dyn ContainerResolver>,
+    _scan_tx: Option<ScanRequestSink>,
     _sink: EventSink,
     _cancel: CancellationToken,
 ) -> Result<()> {

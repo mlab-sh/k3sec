@@ -17,7 +17,7 @@ tokio = { workspace = true, features = ["net"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
-# eBPF userspace loader deps — only pulled in with the `ebpf` feature (Linux).
+# eBPF userspace loader deps, only pulled in with the `ebpf` feature (Linux).
 aya = { version = "0.13", optional = true }
 k3sec-probe-common = { path = "../k3sec-probe-common", optional = true }
 chrono = { workspace = true, optional = true }
