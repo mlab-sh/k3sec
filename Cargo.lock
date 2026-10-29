@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-agent"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2101,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-api"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "ciborium",
  "serde",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-core"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-engine"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-inventory"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-k8s"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-probe"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2199,11 +2199,11 @@ dependencies = [
 
 [[package]]
 name = "k3sec-probe-common"
-version = "1.5.1"
+version = "1.5.2"
 
 [[package]]
 name = "k3sec-probe-ebpf"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "aya-ebpf",
  "k3sec-probe-common",

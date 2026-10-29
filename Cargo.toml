@@ -29,7 +29,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/mlab-sh/k3sec"

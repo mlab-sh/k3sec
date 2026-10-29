@@ -5,6 +5,43 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.2]
+
+### Fixed
+
+- **eBPF: the events of a pod living a second reach it.** When a process is
+  gone before its `/proc/<pid>/cgroup` is read, its cgroup id finds its
+  container in the host's cgroup tree, which was walked again at most once a
+  second: a pod started and deleted in between lost its events (seen on a
+  DaemonSet node, where every process takes that path). A cgroup id not seen
+  yet now walks the tree at once (a few ms); an id a walk did not find is no
+  container and is not walked for again. On the lab, a Job of 40 pods: 200 of
+  200 events attributed.
+- **eBPF: writes to sensitive paths are all caught.** `file_write` was a BPF
+  program on `syscalls:sys_enter_openat`, which on recent kernels (7.0) runs
+  for few calls, and `open` / `creat` never pass there: 7 of 200 writes under
+  `/etc` seen on the lab. It is now a kprobe on `do_sys_openat2`, where every
+  open ends: 200 of 200. A kernel without that symbol gets no `file_write`, with
+  a warning, and keeps the other kinds.
+- **YARA: a binary that runs for a millisecond is scanned.** Its
+  `/proc/<pid>/exe` is gone before the scan; it is now read at its exec'd path
+  through the root of a live process of its container. On a DaemonSet node of
+  the lab: 0 of 20 execs of a marked binary detected before, 20 of 20 now.
+- **The exec → loaded promotion of a process already gone** resolves its path
+  in the image's root as inventoried, instead of giving up.
+
+### Changed
+
+- **YARA: a file found clean is not scanned again** while its identity
+  (device, inode, size, mtime) is the same: 5000 execs of one binary, 2.8 s of
+  CPU before, 0.6 s now. A file that matched is never remembered.
+- **`serve`: the `events_since` backlog is kept encoded** (a few hundred bytes
+  an event, about 6 KB decoded) and also capped at 32 MiB, whatever
+  `backlog_events` says: the pod has a memory limit.
+- **`vulns` / `watch --vulns`: vuln.mlab.sh answers are decoded record by
+  record** instead of whole as a JSON tree: 628 MiB peak before, 232 MiB now,
+  same findings.
+
 ## [v1.5.1]
 
 Fixes from the first cluster followed in an mlab workspace.
