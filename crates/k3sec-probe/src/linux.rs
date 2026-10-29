@@ -1,6 +1,6 @@
 //! Linux eBPF probe: aya loader, ring-buffer reader, and pod enrichment.
 //!
-//! Loads the kernel programs, attaches the `execve` tracepoint, then drains the
+//! Loads the kernel programs, attaches the exec tracepoint, then drains the
 //! `EVENTS` ring buffer. Each raw kernel [`Event`] is resolved to its owning pod
 //! (via the process cgroup → container id → [`ContainerResolver`]) and turned
 //! into a [`SecEvent`]. Everything here is best-effort: a malformed record, a
@@ -19,8 +19,8 @@ use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::{
-    container_id_of_pid, ContainerInfo, ContainerResolver, EventSink, ScanRequest, ScanRequestSink,
-    ScanTrigger, SecEvent, Severity, Source,
+    container_id_of_cgroup, container_id_of_pid, ContainerInfo, ContainerResolver, EventSink,
+    ScanRequest, ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
 };
 use k3sec_probe_common::{af, kind, Event, COMM_LEN, FILENAME_LEN};
 
@@ -107,7 +107,7 @@ pub async fn run(
 /// Load and attach only the programs whose kind is enabled by `--kind`.
 fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     if config.kinds.allows(ProbeKind::Exec) {
-        attach_tracepoint(ebpf, "k3sec_execve", "syscalls", "sys_enter_execve")?;
+        attach_tracepoint(ebpf, "k3sec_execve", "sched", "sched_process_exec")?;
     }
     if config.kinds.allows(ProbeKind::FileWrite) {
         attach_tracepoint(ebpf, "k3sec_openat", "syscalls", "sys_enter_openat")?;
@@ -171,9 +171,10 @@ async fn build_event(
         return None;
     }
 
-    // Resolve pod context from the process cgroup. Host processes (no container
-    // id) are dropped, this is a pod-scoped tool.
-    let container_id = container_id_of_pid(ev.pid);
+    // Resolve pod context from the process cgroup; by the kernel's cgroup id
+    // when the process is already gone (a short exec). Host processes (no
+    // container id) are dropped, this is a pod-scoped tool.
+    let container_id = container_id_of_pid(ev.pid).or_else(|| container_id_of_cgroup(ev.cgroup_id));
     let Some(container_id) = container_id else {
         stats.host.fetch_add(1, Ordering::Relaxed);
         return None;

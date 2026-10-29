@@ -92,8 +92,15 @@ The exec'd path is resolved like the rest of [reachability](Reachability):
 through `/proc/<pid>/exe`, else the `execve` path resolved inside the container
 root (`/bin/sh` → `/usr/bin/dash` → `dash`).
 
-> This path is covered by unit tests on a fake rootfs; it was not exercised on
-> the lab, which had no `bpf-linker` to build the probe.
+On the lab, with the pods inventoried (`--rollback`), `perl -e 1` in the
+nginx pod: the exec event and 21 `perl-base` vulnerability events, all
+`loaded`, within the same second (excerpt, `-o json`, fields trimmed):
+
+```text
+18:26:09 ebpf exec /usr/bin/perl (perl)
+18:26:09 vuln perl-base CVE-2023-31484 loaded nginx-57fcccff77-4hhkt/nginx
+18:26:09 vuln perl-base CVE-2024-56406 loaded nginx-57fcccff77-4hhkt/nginx
+```
 
 ## Event fields
 

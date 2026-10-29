@@ -5,7 +5,7 @@ came from:
 
 | Kind | Hook | Severity | Filter |
 |------|------|----------|--------|
-| `exec` | tracepoint `syscalls:sys_enter_execve` | info | every exec in a container |
+| `exec` | tracepoint `sched:sched_process_exec` | info | every successful exec in a container |
 | `connect` | kprobes `tcp_v4_connect`, `tcp_v6_connect` | info | outbound TCP |
 | `file_write` | tracepoint `syscalls:sys_enter_openat` (write flags) | warning | paths under `/etc/`, `/usr/bin/`, `/root/`, `/var/run/secrets` (in-kernel) |
 
@@ -27,7 +27,10 @@ The probe is Linux-only, behind a cargo feature. The kernel program
 ```bash
 rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
-cargo install bpf-linker          # needs LLVM (apt install llvm clang)
+# bpf-linker: the prebuilt static binary (`cargo install` needs a system LLVM
+# of the exact major it was released for, 23 for 0.12)
+curl -fsSL https://github.com/aya-rs/bpf-linker/releases/download/v0.12.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst \
+  | tar --zstd -x -C ~/.cargo/bin
 cargo build --release --features ebpf
 ```
 
@@ -47,7 +50,14 @@ Kernel requirements: Linux 6.x with BTF, root or `CAP_BPF` + `CAP_PERFMON`.
 
 Each event's PID → `/proc/<pid>/cgroup` → container id (innermost 64-hex
 segment) → pod, through a node-scoped pod watch (`--node` / `$NODE_NAME`).
-Host processes are dropped: k3sec is pod-scoped.
+When the process is already gone (a short `exec`), the kernel's cgroup id
+does it instead: it is the inode of the container's cgroup directory, found in
+the host's cgroup tree (`/proc/1/root/sys/fs/cgroup`, also from a `hostPID`
+pod). Host processes are dropped: k3sec is pod-scoped.
+
+Exec capture uses `sched:sched_process_exec`, not `syscalls:sys_enter_execve`:
+on the lab's kernel (7.0), BPF programs on the syscall tracepoint ran for 9 of
+50 execs in a container; on `sched_process_exec`, 50 of 50.
 
 ## Robustness
 

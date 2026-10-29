@@ -2,7 +2,8 @@
 //!
 //! Three hooks, each filling one fixed-size [`Event`] into the `EVENTS` ring
 //! buffer:
-//! * `execve`     , `syscalls:sys_enter_execve` (executed binary).
+//! * `execve`     , `sched:sched_process_exec` (executed binary, successful
+//!   execs only).
 //! * `connect`    , kprobes on `tcp_v4_connect` / `tcp_v6_connect` (dest ip:port).
 //! * `file_write` , `syscalls:sys_enter_openat`, filtered in-kernel to *write*
 //!   opens under sensitive paths, so userspace never sees the firehose.
@@ -16,11 +17,13 @@
 use aya_ebpf::{
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
-        bpf_get_current_uid_gid, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
+        bpf_get_current_uid_gid, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
+        bpf_probe_read_user_str_bytes,
     },
     macros::{kprobe, map, tracepoint},
     maps::{Array, RingBuf},
     programs::{ProbeContext, TracePointContext},
+    EbpfContext,
 };
 use k3sec_probe_common::{af, kind, Event, FILENAME_LEN};
 
@@ -39,7 +42,9 @@ const SENSITIVE_PREFIXES: [&[u8]; 4] = [b"/etc/", b"/usr/bin/", b"/root/", b"/va
 // execve
 // ---------------------------------------------------------------------------
 
-/// Tracepoint: `syscalls:sys_enter_execve`. Captures the executed binary path.
+/// Tracepoint: `sched:sched_process_exec`, in the new image after a successful
+/// exec. Not `syscalls:sys_enter_execve`: on recent kernels (7.0) its BPF
+/// programs miss most execs, and it also fires for failed PATH lookups.
 #[tracepoint]
 pub fn k3sec_execve(ctx: TracePointContext) -> u32 {
     let _ = try_execve(&ctx);
@@ -57,11 +62,11 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
     // every field is initialized before `submit`.
     unsafe {
         fill_common(e, kind::EXEC);
-        // `sys_enter_execve(const char *filename, ...)`: first arg at offset 16.
-        if let Ok(filename_ptr) = ctx.read_at::<*const u8>(16) {
-            if !filename_ptr.is_null() {
-                let _ = bpf_probe_read_user_str_bytes(filename_ptr, &mut (*e).filename);
-            }
+        // `__data_loc char[] filename` at offset 8: the string's offset in the
+        // record (low 16 bits), its length (high 16).
+        if let Ok(loc) = ctx.read_at::<u32>(8) {
+            let src = (ctx.as_ptr() as *const u8).add((loc & 0xffff) as usize);
+            let _ = bpf_probe_read_kernel_str_bytes(src, &mut (*e).filename);
         }
     }
 
