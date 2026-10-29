@@ -2,7 +2,8 @@
 
 Every source emits the same envelope. With `-o json` the [live stream](Watch)
 prints one per line (NDJSON). Treat the field names as a contract (beta: they
-may still change between milestones).
+may still change between milestones). The CBOR form sent to the mlab-agent is
+frozen as v1 in the `k3sec-api` crate, see [Tool API](Tool-API).
 
 ```text
 source     where it came from        k8s-event | k8s-log | ebpf | yara | vuln

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/k3sec",
+    "crates/k3sec-api",
     "crates/k3sec-core",
     "crates/k3sec-engine",
     "crates/k3sec-inventory",
@@ -16,6 +17,7 @@ members = [
 # normal host `cargo build`/`clippy`/`test` never tries to compile it.
 default-members = [
     "crates/k3sec",
+    "crates/k3sec-api",
     "crates/k3sec-core",
     "crates/k3sec-engine",
     "crates/k3sec-inventory",
@@ -32,6 +34,7 @@ repository = "https://github.com/mlab-sh/k3sec"
 rust-version = "1.85"
 
 [workspace.dependencies]
+k3sec-api = { path = "crates/k3sec-api" }
 k3sec-core = { path = "crates/k3sec-core" }
 k3sec-engine = { path = "crates/k3sec-engine" }
 k3sec-inventory = { path = "crates/k3sec-inventory" }

@@ -12,6 +12,7 @@
 - [YARA detection](YARA-Detection)
 - [watch --vulns](Watch-Vulns)
 - [SecEvent schema](SecEvent-Schema)
+- [Tool API (mlab-agent)](Tool-API)
 
 **Vulnerabilities**
 - [Reachability](Reachability)
