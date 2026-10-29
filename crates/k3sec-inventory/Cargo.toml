@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+k3sec-api.workspace = true
 k3sec-core.workspace = true
 
 anyhow.workspace = true

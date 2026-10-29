@@ -28,6 +28,7 @@ pub mod rootfs;
 pub mod sbom;
 pub mod vuln;
 pub mod watch;
+pub mod wire;
 
 pub use cache::Cache;
 pub use inventory::{group_by_image, node_inventory, scan_image, ImageScan};
