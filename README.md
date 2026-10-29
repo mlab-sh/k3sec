@@ -51,11 +51,53 @@ Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
-Requires a recent stable Rust toolchain (1.85+).
+Release builds include the eBPF probe and RPM support, for x86_64 and aarch64
+Linux (glibc 2.35+: Debian 12, Ubuntu 22.04, RHEL 9 and later).
+
+**apt** (Debian / Ubuntu)
 
 ```bash
-git clone https://github.com/mlab-sh/k3sec
-cd k3sec
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://apt.mlab.sh/mlab.asc -o /etc/apt/keyrings/mlab.asc
+sudo tee /etc/apt/sources.list.d/mlab.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://apt.mlab.sh
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/mlab.asc
+EOF
+sudo apt update && sudo apt install k3sec
+```
+
+**dnf / zypper** (Fedora, RHEL, Rocky, Alma, openSUSE)
+
+```bash
+sudo curl -fsSL https://pkg.mlab.sh/rpm/mlab.repo -o /etc/yum.repos.d/mlab.repo
+sudo dnf install k3sec
+```
+
+The signing key is the one every mlab package uses: fingerprint
+`717894BC C0E057E4 F9BBF3CA C0E287DD 9609A065`.
+
+The packages install `/usr/bin/k3sec`, the YARA rules in
+`/usr/share/k3sec/rules`, and a `k3sec.service` unit (disabled) that runs
+`watch --ebpf --rules` on the host.
+
+**Prebuilt binary**: tarballs on the
+[releases page](https://github.com/mlab-sh/k3sec/releases), with a
+`SHA256SUMS` signed keyless by the release workflow:
+
+```bash
+cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/mlab-sh/k3sec/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+**From source** (stable Rust 1.85+):
+
+```bash
 cargo build --release                   # binary at ./target/release/k3sec
 cargo build --release --features rpm    # + RPM-based images (bundles SQLite)
 cargo build --release --features ebpf   # + the eBPF probe (Linux, nightly + bpf-linker)
@@ -63,6 +105,29 @@ cargo build --release --features ebpf   # + the eBPF probe (Linux, nightly + bpf
 
 See the [eBPF probe](https://github.com/mlab-sh/k3sec/wiki/eBPF-Probe#build)
 page for the BPF toolchain setup.
+
+## In a cluster, with mlab
+
+With an [mlab](https://mlab.sh) workspace, k3sec runs on every node next to
+**mlab-agent**, one pod per node: the agent owns the workspace identity and
+the only outbound connection, and starts `k3sec serve` as its tool. k3sec has
+no mlab key and talks to nothing but the Kubernetes API. Events, inventories
+and vulnerabilities show up in the workspace's **Cluster** tab.
+
+```bash
+kubectl create namespace k3sec
+kubectl -n k3sec create secret generic k3sec-enroll --from-literal=code=<cluster enrolment code>
+curl -fsSLO https://raw.githubusercontent.com/mlab-sh/k3sec/main/deploy/kubernetes/k3sec.yaml
+# edit the k3sec-policy ConfigMap: upload host, what mlab may turn on
+kubectl apply -f k3sec.yaml
+```
+
+The image is `ghcr.io/mlab-sh/k3sec` (k3sec, mlab-agent and the rules; amd64
+for now). Read-only RBAC, no privileged mode: `hostPID` plus
+`BPF`, `PERFMON`, `SYS_RESOURCE`, `SYS_PTRACE` and `DAC_READ_SEARCH`. The
+[Deployment](https://github.com/mlab-sh/k3sec/wiki/Deployment) page has the
+details; [Tool API](https://github.com/mlab-sh/k3sec/wiki/Tool-API) has the
+contract between k3sec and the agent.
 
 ## Quick start
 
