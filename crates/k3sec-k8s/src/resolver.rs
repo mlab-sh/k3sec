@@ -27,6 +27,8 @@ pub struct PodNotify {
     /// Also report containers already running when the watch starts
     /// (`--rollback`); otherwise only containers that appear afterwards.
     pub existing: bool,
+    /// Only report pods of this namespace (`--namespace`).
+    pub namespace: Option<String>,
 }
 
 /// A live, node-scoped map of container runtime IDs to their owning pod.
@@ -157,6 +159,13 @@ impl NodePodResolver {
         let Some(notify) = &self.notify else {
             return;
         };
+        if notify
+            .namespace
+            .as_ref()
+            .is_some_and(|ns| pod.metadata.namespace.as_ref() != Some(ns))
+        {
+            return;
+        }
         let fresh: Vec<PodContainer> = {
             let mut seen = self.seen.write().expect("resolver seen-set poisoned");
             pod_containers(pod)

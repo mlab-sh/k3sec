@@ -181,6 +181,7 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         PodNotify {
             tx: ctx,
             existing: args.rollback,
+            namespace: args.namespace.clone(),
         }
     });
     let resolver = (args.ebpf || args.vulns)
