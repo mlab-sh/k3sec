@@ -20,7 +20,9 @@ RUN cargo build --release --locked -p k3sec --features "${FEATURES}" \
 
 FROM scratch AS k3sec-dist
 ARG TARGETARCH
-COPY dist/k3sec-linux-${TARGETARCH} /usr/bin/k3sec
+# --chmod: release binaries come through workflow artifacts, which drop the
+# executable bit.
+COPY --chmod=0755 dist/k3sec-linux-${TARGETARCH} /usr/bin/k3sec
 
 FROM k3sec-${K3SEC_FROM} AS k3sec
 
