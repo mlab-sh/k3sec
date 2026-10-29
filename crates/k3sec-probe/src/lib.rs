@@ -78,6 +78,48 @@ pub struct ProbeConfig {
     pub kinds: KindFilter,
 }
 
+/// A connect that never leaves the pod: to `0.0.0.0`, `::` or loopback (health
+/// checks, such as CoreDNS probing itself every second). Not reported.
+pub fn is_local_destination(ip: std::net::IpAddr) -> bool {
+    let ip = match ip {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, std::net::IpAddr::V4),
+        v4 => v4,
+    };
+    ip.is_unspecified() || ip.is_loopback()
+}
+
+/// Container ids that stayed unknown to the pod watch after a wait: not pods
+/// (the node's own containers, a runtime's sandbox). Their next events go out
+/// at once instead of waiting again, until the entry is `ttl` old.
+#[derive(Debug)]
+pub struct NotPods {
+    ttl: std::time::Duration,
+    seen: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+}
+
+impl NotPods {
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            ttl,
+            seen: Default::default(),
+        }
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen.get(id).is_some_and(|at| at.elapsed() < self.ttl)
+    }
+
+    pub fn insert(&self, id: &str) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        // shortcut: wholesale reset instead of expiry, bounded by containers per node
+        if seen.len() >= 4096 {
+            seen.clear();
+        }
+        seen.insert(id.to_string(), std::time::Instant::now());
+    }
+}
+
 /// The eBPF [`EventSource`]. See the module docs for platform/feature gating.
 pub struct EbpfSource {
     config: ProbeConfig,
@@ -158,6 +200,40 @@ mod tests {
         assert!(f.allows(ProbeKind::Exec));
         assert!(f.allows(ProbeKind::Connect));
         assert!(!f.allows(ProbeKind::FileWrite));
+    }
+
+    #[test]
+    fn local_destinations() {
+        for ip in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "127.8.9.10",
+            "::",
+            "::1",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
+        ] {
+            assert!(is_local_destination(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "10.43.208.249",
+            "1.1.1.1",
+            "2606:4700::1111",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(!is_local_destination(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn not_pods_expire() {
+        let n = NotPods::new(std::time::Duration::from_secs(60));
+        assert!(!n.contains("abc"));
+        n.insert("abc");
+        assert!(n.contains("abc"));
+        let short = NotPods::new(std::time::Duration::ZERO);
+        short.insert("abc");
+        assert!(!short.contains("abc"), "expired");
     }
 
     #[test]

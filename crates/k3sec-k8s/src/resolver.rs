@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures::StreamExt;
@@ -38,6 +39,10 @@ pub struct NodePodResolver {
     notify: Option<PodNotify>,
     /// Container ids already reported (or deliberately skipped) via `notify`.
     seen: RwLock<HashSet<String>>,
+    /// Containers of deleted pods, still resolvable until `forget_after`: a
+    /// short-lived pod is often gone before its last events are attributed.
+    gone: RwLock<HashMap<String, Instant>>,
+    forget_after: Duration,
 }
 
 impl NodePodResolver {
@@ -59,6 +64,7 @@ impl NodePodResolver {
     ) -> Arc<Self> {
         let resolver = Arc::new(Self {
             notify,
+            forget_after: Duration::from_secs(60),
             ..Self::default()
         });
         let bg = resolver.clone();
@@ -189,7 +195,21 @@ impl NodePodResolver {
             return;
         };
         let mut map = self.map.write().expect("resolver map poisoned");
-        map.retain(|_, info| !(info.namespace == namespace && info.pod == pod_name));
+        let mut gone = self.gone.write().expect("resolver map poisoned");
+        let now = Instant::now();
+        for (id, info) in map.iter() {
+            if info.namespace == namespace && info.pod == pod_name {
+                gone.entry(id.clone()).or_insert(now);
+            }
+        }
+        // Container ids are never reused: what is past its grace goes for good.
+        gone.retain(|id, at| {
+            let keep = now.duration_since(*at) < self.forget_after;
+            if !keep {
+                map.remove(id);
+            }
+            keep
+        });
     }
 
     /// Number of indexed containers (for diagnostics / tests).
@@ -280,6 +300,19 @@ mod tests {
         resolver.forget_pod(&pod);
         assert_eq!(resolver.len(), 0);
         assert!(resolver.by_container_id(CID).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn deleted_pod_resolves_during_its_grace() {
+        let resolver = NodePodResolver {
+            forget_after: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let pod = pod_with_container("default", "job-abc", "job", CID);
+        resolver.index_pod(&pod);
+        resolver.forget_pod(&pod);
+        let info = resolver.by_container_id(CID).await.expect("still known");
+        assert_eq!(info.pod, "job-abc");
     }
 
     #[tokio::test]

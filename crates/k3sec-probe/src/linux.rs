@@ -7,9 +7,10 @@
 //! full ring buffer, or an unresolved cgroup increments a counter and is dropped
 //!, the reader never blocks and never panics on event data.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{Array, RingBuf};
@@ -24,7 +25,11 @@ use k3sec_core::{
 };
 use k3sec_probe_common::{af, kind, Event, COMM_LEN, FILENAME_LEN};
 
-use crate::{ProbeConfig, ProbeKind};
+use crate::{is_local_destination, NotPods, ProbeConfig, ProbeKind};
+
+/// How long the events of a container the pod watch does not know yet wait
+/// for it: a new container runs before its pod's status names it.
+const RESOLVE_WAIT: Duration = Duration::from_secs(2);
 
 /// Counters for dropped events, logged on shutdown.
 #[derive(Default)]
@@ -33,6 +38,8 @@ struct DropStats {
     host: AtomicU64,
     /// Records whose container id didn't resolve to a known pod.
     unresolved: AtomicU64,
+    /// Connects to `0.0.0.0` or loopback (health checks), not reported.
+    local: AtomicU64,
     /// Malformed / short ring-buffer records.
     malformed: AtomicU64,
 }
@@ -64,7 +71,8 @@ pub async fn run(
 
     tracing::info!("eBPF probe loaded; streaming kernel events");
 
-    let stats = DropStats::default();
+    let stats = Arc::new(DropStats::default());
+    let not_pods = Arc::new(NotPods::new(Duration::from_secs(60)));
     let mut async_fd = AsyncFd::new(ring).context("failed to register ring buffer for polling")?;
 
     loop {
@@ -88,12 +96,29 @@ pub async fn run(
                 guard.clear_ready();
 
                 for ev in batch {
-                    if let Some(sec) =
-                        build_event(&ev, &config, resolver.as_ref(), scan_tx.as_ref(), &stats).await
-                    {
-                        if sink.send(sec).await.is_err() {
-                            return Ok(()); // printer gone
-                        }
+                    let at = chrono::Utc::now();
+                    let Some((probe_kind, container_id)) = classify(&ev, &config, &stats) else {
+                        continue;
+                    };
+                    let info = resolver.by_container_id(&container_id).await;
+                    if info.is_none() && !not_pods.contains(&container_id) {
+                        // Resolved later, off the reader: the next records keep flowing.
+                        let (resolver, sink, scan_tx, stats, not_pods) =
+                            (resolver.clone(), sink.clone(), scan_tx.clone(), stats.clone(), not_pods.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(RESOLVE_WAIT).await;
+                            let info = resolver.by_container_id(&container_id).await;
+                            if info.is_none() {
+                                not_pods.insert(&container_id);
+                            }
+                            let sec = build_event(&ev, probe_kind, &container_id, info, scan_tx.as_ref(), &stats, at);
+                            let _ = sink.send(sec).await;
+                        });
+                        continue;
+                    }
+                    let sec = build_event(&ev, probe_kind, &container_id, info, scan_tx.as_ref(), &stats, at);
+                    if sink.send(sec).await.is_err() {
+                        return Ok(()); // printer gone
                     }
                 }
             }
@@ -147,17 +172,10 @@ fn attach_kprobe(ebpf: &mut Ebpf, prog: &str, symbol: &str) -> Result<()> {
     Ok(())
 }
 
-/// Turn a raw kernel event into a [`SecEvent`], attaching pod context.
-///
-/// Returns `None` (with a counter bumped) for host processes and kind-filtered
-/// events, so only in-container, requested kinds reach the pipeline.
-async fn build_event(
-    ev: &Event,
-    config: &ProbeConfig,
-    resolver: &dyn ContainerResolver,
-    scan_tx: Option<&ScanRequestSink>,
-    stats: &DropStats,
-) -> Option<SecEvent> {
+/// The kind and container of a record worth reporting; `None` (with a counter
+/// bumped) for host processes, local connects and kind-filtered events, so
+/// only in-container, requested kinds reach the pipeline.
+fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(ProbeKind, String)> {
     let probe_kind = match ev.kind {
         kind::EXEC => ProbeKind::Exec,
         kind::CONNECT => ProbeKind::Connect,
@@ -170,6 +188,10 @@ async fn build_event(
     if !config.kinds.allows(probe_kind) {
         return None;
     }
+    if probe_kind == ProbeKind::Connect && dest_ip(ev).is_some_and(is_local_destination) {
+        stats.local.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
 
     // Resolve pod context from the process cgroup; by the kernel's cgroup id
     // when the process is already gone (a short exec). Host processes (no
@@ -179,7 +201,19 @@ async fn build_event(
         stats.host.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    let info = resolver.by_container_id(&container_id).await;
+    Some((probe_kind, container_id))
+}
+
+/// Turn a classified kernel event into a [`SecEvent`], with its pod when known.
+fn build_event(
+    ev: &Event,
+    probe_kind: ProbeKind,
+    container_id: &str,
+    info: Option<ContainerInfo>,
+    scan_tx: Option<&ScanRequestSink>,
+    stats: &DropStats,
+    at: chrono::DateTime<chrono::Utc>,
+) -> SecEvent {
     if info.is_none() {
         stats.unresolved.fetch_add(1, Ordering::Relaxed);
     }
@@ -210,14 +244,14 @@ async fn build_event(
         }
     };
 
-    let mut builder = SecEvent::builder(Source::Ebpf, chrono::Utc::now())
+    let mut builder = SecEvent::builder(Source::Ebpf, at)
         .kind(kind_str)
         .severity(severity)
         .message(message)
         .meta("pid", ev.pid.to_string())
         .meta("uid", ev.uid.to_string())
         .meta("comm", comm)
-        .meta("container_id", short_id(&container_id));
+        .meta("container_id", short_id(container_id));
 
     if let Some(info) = &info {
         builder = builder
@@ -227,8 +261,8 @@ async fn build_event(
             .meta("container", info.container.clone());
     }
 
-    builder = builder.payload(payload(ev, probe_kind, &container_id, info.as_ref()));
-    Some(builder.build())
+    builder = builder.payload(payload(ev, probe_kind, container_id, info.as_ref()));
+    builder.build()
 }
 
 /// Enqueue a scan for exec/file_write events; never blocks event capture.
@@ -275,15 +309,20 @@ fn short_id(id: &str) -> String {
 
 /// Format a connect event's destination as `ip:port`.
 fn format_dest(ev: &Event) -> String {
-    let ip = match ev.af {
+    let ip = dest_ip(ev).map_or_else(|| "?".to_string(), |ip| ip.to_string());
+    format!("{ip}:{}", ev.dport)
+}
+
+/// A connect event's destination address.
+fn dest_ip(ev: &Event) -> Option<IpAddr> {
+    match ev.af {
         af::INET => {
             let o = &ev.daddr;
-            Ipv4Addr::new(o[0], o[1], o[2], o[3]).to_string()
+            Some(Ipv4Addr::new(o[0], o[1], o[2], o[3]).into())
         }
-        af::INET6 => Ipv6Addr::from(ev.daddr).to_string(),
-        _ => "?".to_string(),
-    };
-    format!("{ip}:{}", ev.dport)
+        af::INET6 => Some(Ipv6Addr::from(ev.daddr).into()),
+        _ => None,
+    }
 }
 
 fn payload(
@@ -321,6 +360,7 @@ fn report_drops(stats: &DropStats, drops_map: &Array<aya::maps::MapData, u64>) {
         kernel_ringbuf_full = kernel,
         host = stats.host.load(Ordering::Relaxed),
         unresolved = stats.unresolved.load(Ordering::Relaxed),
+        local = stats.local.load(Ordering::Relaxed),
         malformed = stats.malformed.load(Ordering::Relaxed),
         "eBPF probe drop counters",
     );
