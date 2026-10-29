@@ -1,6 +1,6 @@
 [package]
 name = "k3sec-probe-ebpf"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 publish = false
 license = "GPL-2.0-only"

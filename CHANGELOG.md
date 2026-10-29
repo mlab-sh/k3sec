@@ -5,6 +5,33 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.1]
+
+Fixes from the first cluster followed in an mlab workspace.
+
+### Fixed
+
+- **eBPF: connects to `0.0.0.0`, `::` and loopback are no longer reported.**
+  They never leave the pod: CoreDNS probing its own health endpoint alone made
+  one event a second, all day long.
+- **eBPF: the first events of a new container reach its pod.** A container
+  runs before its pod's status names it, so its first execs went out without
+  a pod (and a namespace filter dropped them). An event whose container is not
+  known yet now waits up to 2 s for it, without holding back the others; a
+  container still unknown then (the node's own) is not waited for again. A
+  deleted pod stays known for a minute, so the last events of a short-lived
+  pod still reach it.
+- **Vulnerabilities: the Go modules of a running binary are `loaded`.** A Go
+  binary is statically linked: when it runs, every module it was built with is
+  in memory. They were `unknown`, so a running CoreDNS or Caddy showed no
+  loaded vulnerability.
+- **Vulnerabilities: Debian "unimportant" CVEs are not findings.** Debian
+  triages some CVEs as not an issue for a package (disputed, or harmless as
+  Debian builds it): `CVE-2013-0337` for nginx, `CVE-2019-1010022` for glibc.
+  They were reported, often as critical, with no fix to apply. Only the
+  package's own triage counts. On Debian 12: 3 of 8 advisories for nginx, 7 of
+  39 for glibc.
+
 ## [v1.5.0]
 
 k3sec in the mlab ecosystem: on every node, k3sec runs as a tool of
