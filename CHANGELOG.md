@@ -5,6 +5,56 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0]
+
+k3sec in the mlab ecosystem: on every node, k3sec runs as a tool of
+**mlab-agent**, and everything it sees lands in the workspace's Cluster tab.
+
+### Added
+
+- **`k3sec serve`**, the mlab-agent tool mode. Started by the agent and pinned
+  to the SHA-256 of its binary, it speaks the agent's tool protocol on stdio.
+  k3sec holds no mlab key and opens no connection to mlab: the agent owns the
+  identity and the only outbound link.
+  - Ops: `status`, `configure`, `events_since`, `inventory`, `sbom`.
+  - Events: `batch`, `status` (heartbeat), `inventory_ready`.
+  - Batches are numbered (`boot_id` + `seq`). A bounded backlog serves
+    `events_since` after a gap, drops are counted, and critical events are
+    flushed first.
+  - The config is chosen in the workspace and applied live, without a restart,
+    always within the node's local policy (`[tools.k3sec.settings]`).
+  - Vulnerabilities: k3sec sends the inventory with match coordinates and
+    reachability; matching happens in mlab.
+- **`k3sec-api`**: the v1 contract (`SecEvent` v1, the ops, the events), frozen
+  by golden CBOR files. Spec in [`docs/tool-api.md`](docs/tool-api.md).
+- **DaemonSet with mlab-agent**: `deploy/kubernetes/k3sec.yaml` and the
+  `ghcr.io/mlab-sh/k3sec` image (`deploy/Dockerfile`).
+  - RBAC is read-only, and there is no privileged mode: `hostPID` plus `BPF`,
+    `PERFMON`, `SYS_RESOURCE`, `SYS_PTRACE` and `DAC_READ_SEARCH`.
+  - Each node enrols once with a cluster enrolment code; its keys stay on the
+    node.
+- **Packages**: `.deb` on apt.mlab.sh and `.rpm` on pkg.mlab.sh, for amd64 and
+  arm64. The release binaries include the eBPF probe (verified for each
+  architecture in the release workflow).
+  - A `SHA256SUMS` file is signed keyless with Sigstore.
+  - A `k3sec.service` unit (disabled) for standalone host use.
+- `LICENSE` (Apache-2.0).
+
+### Fixed
+
+- **eBPF: most execs were missed.** On recent kernels (7.0 on the lab), BPF
+  programs on `syscalls:sys_enter_execve` ran for 9 of 50 execs in a
+  container. Exec capture now uses `sched:sched_process_exec`: 50 of 50, and
+  only successful execs (no more failed `PATH` lookups). The process name in
+  the message is now the new program's (`exec /usr/bin/ls (ls)`).
+- **eBPF: short-lived processes were dropped as host processes.** A process
+  gone before its `/proc/<pid>/cgroup` was read is now attributed through the
+  kernel's cgroup id (the inode of its container's cgroup directory).
+- **Matching: versions that are not one are not matched.** A coordinate with an
+  empty version, a wildcard (`*`, `1.x`), a range (`^1.2`, `>=2`) or a tag
+  (`latest`, `(devel)`) would have matched every CVE of the product: the
+  package stays in the inventory, counted as unmatched.
+
 ## [v1.4.0]
 
 Runtime-aware vulnerability detection: k3sec now tells you which CVEs touch

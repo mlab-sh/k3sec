@@ -132,8 +132,8 @@ its purl as `bom-ref`, and the reachability in a `k3sec:reachability` property:
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-29T15:45:42Z",
-    "tools": { "components": [{ "type": "application", "name": "k3sec", "version": "1.4.0" }] },
+    "timestamp": "2026-10-29T18:37:31Z",
+    "tools": { "components": [{ "type": "application", "name": "k3sec", "version": "1.5.0" }] },
     "component": { "type": "container",
       "bom-ref": "sha256:c7a6ad68be85142c7fe1089e48faa1e7c7166a194caa9180ddea66345876b9d2",
       "name": "docker.io/library/nginx:1.25.3",
