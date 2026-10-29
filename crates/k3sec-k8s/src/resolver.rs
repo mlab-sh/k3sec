@@ -5,7 +5,7 @@
 //! container ID from a process's cgroup path and looks it up here to attach
 //! `namespace/pod/container` context to each kernel event.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
@@ -14,15 +14,28 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event as WatchEvent;
 use kube::{Api, Client};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Backoff;
-use k3sec_core::{ContainerInfo, ContainerResolver};
+use crate::workload::pod_containers;
+use k3sec_core::{ContainerInfo, ContainerResolver, PodContainer};
+
+/// Where the resolver reports containers it sees start (used by `watch --vulns`).
+pub struct PodNotify {
+    pub tx: mpsc::Sender<PodContainer>,
+    /// Also report containers already running when the watch starts
+    /// (`--rollback`); otherwise only containers that appear afterwards.
+    pub existing: bool,
+}
 
 /// A live, node-scoped map of container runtime IDs to their owning pod.
 #[derive(Default)]
 pub struct NodePodResolver {
     map: RwLock<HashMap<String, ContainerInfo>>,
+    notify: Option<PodNotify>,
+    /// Container ids already reported (or deliberately skipped) via `notify`.
+    seen: RwLock<HashSet<String>>,
 }
 
 impl NodePodResolver {
@@ -32,7 +45,20 @@ impl NodePodResolver {
     /// Returns the shared resolver immediately; the map fills in as the watch
     /// syncs. Lookups before the first sync simply miss (no pod context yet).
     pub fn spawn(client: Client, node: Option<String>, cancel: CancellationToken) -> Arc<Self> {
-        let resolver = Arc::new(Self::default());
+        Self::spawn_with_notify(client, node, None, cancel)
+    }
+
+    /// Like [`spawn`](Self::spawn), also reporting newly running containers.
+    pub fn spawn_with_notify(
+        client: Client,
+        node: Option<String>,
+        notify: Option<PodNotify>,
+        cancel: CancellationToken,
+    ) -> Arc<Self> {
+        let resolver = Arc::new(Self {
+            notify,
+            ..Self::default()
+        });
         let bg = resolver.clone();
         tokio::spawn(async move { bg.run(client, node, cancel).await });
         resolver
@@ -76,8 +102,14 @@ impl NodePodResolver {
             item = stream.next() => Some(item),
         } {
             match item {
-                Some(Ok(WatchEvent::Apply(pod))) | Some(Ok(WatchEvent::InitApply(pod))) => {
-                    self.index_pod(&pod)
+                Some(Ok(WatchEvent::Apply(pod))) => {
+                    self.index_pod(&pod);
+                    self.notify_new(&pod, true).await;
+                }
+                Some(Ok(WatchEvent::InitApply(pod))) => {
+                    self.index_pod(&pod);
+                    let existing = self.notify.as_ref().is_some_and(|n| n.existing);
+                    self.notify_new(&pod, existing).await;
                 }
                 Some(Ok(WatchEvent::Delete(pod))) => self.forget_pod(&pod),
                 Some(Ok(_)) => {}
@@ -119,6 +151,29 @@ impl NodePodResolver {
         }
     }
 
+    /// Report `pod`'s containers not seen before; with `send == false` they
+    /// are only marked seen (pre-existing pods in realtime mode).
+    async fn notify_new(&self, pod: &Pod, send: bool) {
+        let Some(notify) = &self.notify else {
+            return;
+        };
+        let fresh: Vec<PodContainer> = {
+            let mut seen = self.seen.write().expect("resolver seen-set poisoned");
+            pod_containers(pod)
+                .into_iter()
+                .filter(|c| seen.insert(c.container_id.clone()))
+                .collect()
+        };
+        if send {
+            for c in fresh {
+                // Vuln scanning is best-effort: a full queue drops, never blocks.
+                if notify.tx.try_send(c).is_err() {
+                    tracing::debug!("vuln scan queue full or closed; dropping container");
+                }
+            }
+        }
+    }
+
     /// Drop every entry belonging to `pod`.
     fn forget_pod(&self, pod: &Pod) {
         let (Some(namespace), Some(pod_name)) = (
@@ -154,7 +209,7 @@ impl ContainerResolver for NodePodResolver {
 
 /// Strip a `runtime://` scheme from a `containerStatus.containerID`, returning
 /// the bare id (`containerd://abcd…` → `abcd…`).
-fn strip_runtime_scheme(container_id: &str) -> Option<String> {
+pub(crate) fn strip_runtime_scheme(container_id: &str) -> Option<String> {
     container_id
         .split_once("://")
         .map(|(_, id)| id.to_string())

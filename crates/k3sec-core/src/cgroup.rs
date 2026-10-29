@@ -1,4 +1,5 @@
-//! cgroup path parsing, shared by the probe (to tag events) and k8s (tests).
+//! cgroup path parsing, shared by the probe (to tag events) and the inventory
+//! (to find a container's PIDs).
 
 /// Extract a container runtime ID (64-hex) from a cgroup path.
 ///
@@ -6,13 +7,22 @@
 /// * cgroupfs: `…/pod<uid>/<64hex>`
 /// * systemd:  `…/cri-containerd-<64hex>.scope`, `docker-<64hex>.scope`, …
 ///
+/// The *last* 64-hex segment wins: when k3s itself runs in a container (k3d,
+/// kind), the outer segment is the node container and the inner one the pod's.
+///
 /// Returns the lowercased id, or `None` if no 64-hex segment is present (host
 /// process, not in a container).
 pub fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
     cgroup
         .split(['/', '-', '.', '_', ':'])
-        .find(|seg| seg.len() == 64 && seg.bytes().all(|b| b.is_ascii_hexdigit()))
+        .rfind(|seg| seg.len() == 64 && seg.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(|seg| seg.to_ascii_lowercase())
+}
+
+/// Read `/proc/<pid>/cgroup` and extract the container id, if any.
+pub fn container_id_of_pid(pid: u32) -> Option<String> {
+    let content = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    container_id_from_cgroup(&content)
 }
 
 #[cfg(test)]
@@ -33,6 +43,13 @@ mod tests {
             "0::/kubepods.slice/kubepods-besteffort.slice/\
              kubepods-besteffort-pod1234_5678.slice/cri-containerd-{CID}.scope"
         );
+        assert_eq!(container_id_from_cgroup(&path).as_deref(), Some(CID));
+    }
+
+    #[test]
+    fn nested_runtime_picks_innermost_id() {
+        let outer = "a".repeat(64);
+        let path = format!("0::/system.slice/docker-{outer}.scope/kubepods/besteffort/podx/{CID}");
         assert_eq!(container_id_from_cgroup(&path).as_deref(), Some(CID));
     }
 

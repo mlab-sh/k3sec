@@ -19,8 +19,8 @@ use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::{
-    container_id_from_cgroup, ContainerInfo, ContainerResolver, EventSink, ScanRequest,
-    ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
+    container_id_of_pid, ContainerInfo, ContainerResolver, EventSink, ScanRequest, ScanRequestSink,
+    ScanTrigger, SecEvent, Severity, Source,
 };
 use k3sec_probe_common::{af, kind, Event, COMM_LEN, FILENAME_LEN};
 
@@ -173,7 +173,7 @@ async fn build_event(
 
     // Resolve pod context from the process cgroup. Host processes (no container
     // id) are dropped, this is a pod-scoped tool.
-    let container_id = read_container_id(ev.pid);
+    let container_id = container_id_of_pid(ev.pid);
     let Some(container_id) = container_id else {
         stats.host.fetch_add(1, Ordering::Relaxed);
         return None;
@@ -259,12 +259,6 @@ fn maybe_request_scan(
     if scan_tx.try_send(req).is_err() {
         tracing::debug!("scan queue full or closed; dropping scan request");
     }
-}
-
-/// Read `/proc/<pid>/cgroup` and extract the container id, if any.
-fn read_container_id(pid: u32) -> Option<String> {
-    let content = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    container_id_from_cgroup(&content)
 }
 
 /// Convert a NUL-padded byte field to a `String` (lossy, trimmed at first NUL).

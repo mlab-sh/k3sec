@@ -10,6 +10,9 @@ license = "GPL-2.0-only"
 [[bin]]
 name = "k3sec-bpf"
 path = "src/main.rs"
+# BPF-target only: a host `cargo test --workspace` must not try to link it.
+test = false
+bench = false
 
 [dependencies]
 aya-ebpf = "0.1"

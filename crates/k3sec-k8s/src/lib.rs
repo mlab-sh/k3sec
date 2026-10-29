@@ -10,8 +10,10 @@ pub mod client;
 pub mod events;
 pub mod logs;
 pub mod resolver;
+pub mod workload;
 
 pub use client::{build_client, preflight, Backoff};
 pub use events::K8sEventSource;
 pub use logs::K8sLogSource;
-pub use resolver::NodePodResolver;
+pub use resolver::{NodePodResolver, PodNotify};
+pub use workload::{list_node_containers, node_versions, pod_containers};

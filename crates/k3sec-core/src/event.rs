@@ -36,6 +36,8 @@ pub enum Source {
     Ebpf,
     /// A YARA detection produced by the scan engine.
     Yara,
+    /// A runtime-aware vulnerability finding from the inventory + matching.
+    Vuln,
 }
 
 /// Normalized severity, comparable across sources.

@@ -13,10 +13,12 @@ pub mod output;
 pub mod resolver;
 pub mod scan;
 pub mod source;
+pub mod workload;
 
-pub use cgroup::container_id_from_cgroup;
+pub use cgroup::{container_id_from_cgroup, container_id_of_pid};
 pub use event::{SecEvent, SecEventBuilder, Severity, Source};
 pub use output::{OutputFormat, Printer};
 pub use resolver::{ContainerInfo, ContainerResolver};
 pub use scan::{ScanRequest, ScanRequestSink, ScanTrigger};
 pub use source::{EventSink, EventSource};
+pub use workload::{NodeVersions, PodContainer};
