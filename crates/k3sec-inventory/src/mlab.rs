@@ -148,27 +148,34 @@ impl VulnSource for MlabClient {
     async fn scan(&self, coords: &[Coordinate]) -> Result<Vec<Option<Vec<Advisory>>>> {
         let url = format!("{}/api/v2/scan", self.base);
         let body = serde_json::json!({ "packages": coords });
-        let doc: Value = self
+        let doc: ScanDoc = self
             .send(|| self.http.post(&url).json(&body))
             .await?
             .json()
             .await
             .context("invalid JSON from /api/v2/scan")?;
-        if doc["truncated"].as_bool() == Some(true) {
+        if doc.truncated {
             tracing::warn!(
                 "{}",
-                doc["truncation"]["message"]
+                doc.truncation["message"]
                     .as_str()
                     .unwrap_or("scan truncated by the API")
             );
         }
-        if doc["outage"].as_bool() == Some(true) {
+        if doc.outage {
             tracing::warn!("vuln.mlab.sh reports a database outage: some packages not scanned");
         }
-        let results = doc["results"]
-            .as_array()
+        let results = doc
+            .results
             .context("unexpected /api/v2/scan response: no `results` array")?;
-        Ok(results.iter().map(parse_result).collect())
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                r.ok.then_some(r.vulns)
+                    .flatten()
+                    .map(|v| v.into_iter().filter_map(|l| l.0).collect())
+            })
+            .collect())
     }
 
     async fn cve(&self, id: &str) -> Result<Option<CveInfo>> {
@@ -227,28 +234,70 @@ impl VulnSource for MlabClient {
 
 /// `ok:false` (unqueryable / outage) is "not scanned", not "clean". Records
 /// are decoded one by one so a single odd one can't sink the whole answer.
-fn parse_result(r: &Value) -> Option<Vec<Advisory>> {
-    if r["ok"].as_bool() != Some(true) {
-        return None;
+/// The parts of a `/api/v2/scan` answer k3sec reads. Decoded straight into
+/// these types, record by record: a 512-package answer is never held whole as
+/// a JSON tree (with every advisory's `versions` list, 430 MiB on the lab).
+#[derive(serde::Deserialize)]
+struct ScanDoc {
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    truncation: Value,
+    #[serde(default)]
+    outage: bool,
+    results: Option<Vec<ScanResult>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ScanResult {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    vulns: Option<Vec<Lenient>>,
+}
+
+/// One OSV record; a malformed one is skipped, not the whole answer.
+struct Lenient(Option<Advisory>);
+
+impl<'de> serde::Deserialize<'de> for Lenient {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(Lenient(match serde_json::from_value(v) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::debug!(error = %e, "skipping malformed OSV record");
+                None
+            }
+        }))
     }
-    Some(
-        r["vulns"]
-            .as_array()?
-            .iter()
-            .filter_map(|v| match serde_json::from_value(v.clone()) {
-                Ok(a) => Some(a),
-                Err(e) => {
-                    tracing::debug!(error = %e, "skipping malformed OSV record");
-                    None
-                }
-            })
-            .collect(),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_doc_skips_malformed_records_only() {
+        let doc: ScanDoc = serde_json::from_str(
+            r#"{"results": [
+                {"ok": false, "vulns": [{"id": "A"}]},
+                {"ok": true, "vulns": [42, {"id": "B", "versions": ["1", "2"]}]},
+                {"ok": true}
+            ]}"#,
+        )
+        .unwrap();
+        let ids: Vec<Option<Vec<String>>> = doc
+            .results
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                r.ok.then_some(r.vulns)
+                    .flatten()
+                    .map(|v| v.into_iter().filter_map(|l| l.0.map(|a| a.id)).collect())
+            })
+            .collect();
+        assert_eq!(ids, [None, Some(vec!["B".to_string()]), None]);
+    }
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

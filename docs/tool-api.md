@@ -45,7 +45,7 @@ event stream is made reliable on top of that:
   `k3sec serve` process, random id). mlab keeps the last `(boot_id, seq)` per
   instance; a gap means lost batches, fetched with `events_since`.
 - The tool keeps the last batches (`settings.backlog_events` events, 50 000 by
-  default) for that. `Backlog.oldest_seq` says how far back it still goes:
+  default, and at most 32 MiB encoded) for that. `Backlog.oldest_seq` says how far back it still goes:
   older batches are lost, and mlab records the gap.
 - A new `boot_id` starts again at `seq` 1. What the previous process hadn't
   delivered is lost (not persisted to disk in v1).

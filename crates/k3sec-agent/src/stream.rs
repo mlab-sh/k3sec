@@ -13,6 +13,19 @@ use k3sec_api::{
 /// Room kept under [`MAX_BATCH_BYTES`] for the batch's own fields.
 const BATCH_OVERHEAD: usize = 4 * 1024;
 
+/// Bytes of encoded batches the backlog holds at most, whatever
+/// `backlog_events` says: the pod has a memory limit.
+const MAX_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
+
+/// A sent batch kept for `events_since`, encoded: a few hundred bytes an event
+/// instead of the decoded strings, maps and JSON (about 6 KB an event).
+#[derive(Debug)]
+struct Held {
+    seq: u64,
+    events: usize,
+    cbor: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub struct Stream {
     boot_id: String,
@@ -22,9 +35,11 @@ pub struct Stream {
     pending_bytes: usize,
     pending_urgent: bool,
     dropped_since: u64,
-    backlog: VecDeque<Batch>,
+    backlog: VecDeque<Held>,
     backlog_events: usize,
+    backlog_bytes: usize,
     max_backlog_events: usize,
+    max_backlog_bytes: usize,
     counters: Counters,
 }
 
@@ -40,7 +55,9 @@ impl Stream {
             dropped_since: 0,
             backlog: VecDeque::new(),
             backlog_events: 0,
+            backlog_bytes: 0,
             max_backlog_events: max_backlog_events.max(MAX_BATCH_EVENTS),
+            max_backlog_bytes: MAX_BACKLOG_BYTES,
             counters: Counters::default(),
         }
     }
@@ -99,11 +116,23 @@ impl Stream {
         };
         self.pending_bytes = 0;
         self.counters.last_seq = self.seq;
-        self.backlog_events += batch.events.len();
-        self.backlog.push_back(batch.clone());
-        while self.backlog_events > self.max_backlog_events {
+        if let Ok(cbor) = k3sec_api::to_cbor(&batch) {
+            self.backlog_events += batch.events.len();
+            self.backlog_bytes += cbor.len();
+            self.backlog.push_back(Held {
+                seq: batch.seq,
+                events: batch.events.len(),
+                cbor,
+            });
+        }
+        while self.backlog_events > self.max_backlog_events
+            || self.backlog_bytes > self.max_backlog_bytes
+        {
             match self.backlog.pop_front() {
-                Some(old) => self.backlog_events -= old.events.len(),
+                Some(old) => {
+                    self.backlog_events -= old.events;
+                    self.backlog_bytes -= old.cbor.len();
+                }
                 None => break,
             }
         }
@@ -123,8 +152,8 @@ impl Stream {
             batches: self
                 .backlog
                 .iter()
-                .find(|b| b.seq > after)
-                .cloned()
+                .find(|h| h.seq > after)
+                .and_then(|h| k3sec_api::from_cbor(&h.cbor).ok())
                 .into_iter()
                 .collect(),
             oldest_seq: self.backlog.front().map_or(self.seq + 1, |b| b.seq),
@@ -219,6 +248,22 @@ mod tests {
         assert!(s.since("b-1", 5).batches.is_empty());
         // mlab knew an older process: start from what this one holds.
         assert_eq!(s.since("b-0", 99).batches[0].seq, 4);
+    }
+
+    #[test]
+    fn backlog_is_bounded_in_bytes_too() {
+        let mut s = Stream::new("b-1".into(), "n".into(), 100_000);
+        s.max_backlog_bytes = 1024 * 1024;
+        let msg = "x".repeat(10 * 1024);
+        for _ in 0..300 {
+            s.push(ev(Severity::Info, &msg));
+        }
+        s.flush();
+        assert!(s.backlog_bytes <= s.max_backlog_bytes);
+        let b = s.since("b-1", 0);
+        assert!(b.oldest_seq > 1, "the oldest batches were evicted");
+        assert_eq!(b.batches[0].seq, b.oldest_seq);
+        assert_eq!(b.batches[0].events[0].message, msg, "decoded intact");
     }
 
     #[test]
