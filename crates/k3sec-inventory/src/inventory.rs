@@ -87,7 +87,9 @@ pub fn scan_image(
                 .to_string()
         })
         .collect();
-    packages.extend(lang::scan(&rootfs, &exes, limits));
+    let mut lang = lang::scan(&rootfs, &exes, limits);
+    crate::reach::mark_running_binaries(&mut lang, &exes);
+    packages.extend(lang);
 
     let inventory = ImageInventory {
         image: first.image.clone(),

@@ -74,6 +74,17 @@ pub fn mark_loaded<'a>(
     changed
 }
 
+/// The modules of a running Go binary are loaded: it is statically linked,
+/// so all of them are in memory with it. `exes`: the running binaries, as
+/// language packages name their `location`.
+pub fn mark_running_binaries(packages: &mut [Package], exes: &[String]) {
+    for p in packages.iter_mut() {
+        if p.location.as_ref().is_some_and(|l| exes.contains(l)) {
+            p.reachability = Reachability::Loaded;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +172,36 @@ mod tests {
         assert_eq!(reach(&pkgs, "libc6"), Reachability::Loaded);
         // Marking again reports no change.
         assert!(mark_loaded(&mut pkgs, &index, &fs, ["/bin/sh"]).is_empty());
+    }
+
+    #[test]
+    fn running_go_binary_modules_are_loaded() {
+        let module = |name: &str, location: &str| {
+            let mut p = Package::new(
+                name,
+                "v1.0.0",
+                PackageKind::Lang,
+                format!("pkg:golang/{name}@v1.0.0"),
+            );
+            p.location = Some(location.into());
+            p
+        };
+        let mut pkgs = vec![
+            module("github.com/coredns/coredns", "/coredns"),
+            module("golang.org/x/net", "/coredns"),
+            module("github.com/other/tool", "/usr/local/bin/tool"),
+            module("express", "/app/package-lock.json"),
+        ];
+        mark_running_binaries(&mut pkgs, &["/coredns".to_string()]);
+        let r: Vec<_> = pkgs.iter().map(|p| p.reachability).collect();
+        assert_eq!(
+            r,
+            [
+                Reachability::Loaded,
+                Reachability::Loaded,
+                Reachability::Unknown,
+                Reachability::Unknown
+            ]
+        );
     }
 }

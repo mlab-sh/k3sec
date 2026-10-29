@@ -10,8 +10,8 @@ What k3sec does **not** see yet, and how it shows up.
   is planned for a later milestone.
 - **Package granularity.** A loaded `libssl3` makes all of its CVEs "loaded",
   including ones in functions the app never calls.
-- **Language deps are `unknown`.** Interpreted code isn't visible in maps, and
-  Go modules of a running static binary are reported `unknown` too.
+- **Language deps are `unknown`.** Interpreted code isn't visible in maps.
+  Go modules are the exception: those of a running binary are `loaded`.
 
 ## Inventory
 

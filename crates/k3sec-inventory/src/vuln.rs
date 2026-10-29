@@ -90,6 +90,9 @@ pub struct Affected {
     pub package: Option<AffectedPackage>,
     #[serde(default)]
     pub ranges: Vec<Range>,
+    /// Debian's triage of this package: `{"urgency": "unimportant"}`, ...
+    #[serde(default)]
+    pub ecosystem_specific: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -437,7 +440,7 @@ pub fn findings_for(
         _ => pkg.version.as_str(),
     };
     let mut by_id: BTreeMap<String, Finding> = BTreeMap::new();
-    for adv in advisories {
+    for adv in advisories.iter().filter(|a| !unimportant(a, coord)) {
         let label = adv
             .database_specific
             .as_ref()
@@ -508,6 +511,35 @@ fn cves_of(adv: &Advisory) -> Vec<String> {
 
 /// The smallest `fixed` of a range containing `installed`, for this package
 /// in this ecosystem (a distro record lists every release branch).
+/// Debian triaged the issue as not one for this package ("unimportant":
+/// disputed, or harmless as Debian builds it): not a finding. Only this
+/// package's entries count; another package's triage says nothing about it.
+fn unimportant(adv: &Advisory, coord: &Coordinate) -> bool {
+    let Coordinate::Eco {
+        ecosystem, name, ..
+    } = coord
+    else {
+        return false;
+    };
+    let mut ours = adv
+        .affected
+        .iter()
+        .filter(|a| {
+            a.package
+                .as_ref()
+                .is_some_and(|p| &p.ecosystem == ecosystem && &p.name == name)
+        })
+        .peekable();
+    ours.peek().is_some()
+        && ours.all(|a| {
+            a.ecosystem_specific
+                .as_ref()
+                .and_then(|e| e.get("urgency"))
+                .and_then(|u| u.as_str())
+                == Some("unimportant")
+        })
+}
+
 fn fixed_version(adv: &Advisory, coord: &Coordinate, installed: &str) -> Option<String> {
     let (eco, name) = match coord {
         Coordinate::Eco {
@@ -597,6 +629,40 @@ mod tests {
         assert_eq!(version_cmp("1.36.1-r20", "1.36.1-r7"), Ordering::Greater);
         assert_eq!(version_cmp("3.0.15-1~deb12u1", "3.0.15-1"), Ordering::Less);
         assert_eq!(version_cmp("v1.9.1", "1.9.1"), Ordering::Equal);
+    }
+
+    #[test]
+    fn debian_unimportant_is_not_a_finding() {
+        let pkg = Package::new(
+            "nginx",
+            "1.25.3-1~bookworm",
+            PackageKind::Os,
+            "pkg:deb/debian/nginx@1.25.3-1~bookworm".into(),
+        );
+        let coord = Coordinate::eco("Debian:12", "nginx", "1.25.3-1~bookworm");
+        let entry = |name: &str, urgency: &str| {
+            serde_json::json!({
+                "package": {"ecosystem": "Debian:12", "name": name},
+                "ecosystem_specific": {"urgency": urgency},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]
+            })
+        };
+        let advs = vec![
+            // Triaged unimportant for nginx: gone.
+            adv(
+                serde_json::json!({"id": "DEBIAN-CVE-2013-0337", "affected": [entry("nginx", "unimportant")]}),
+            ),
+            // Unimportant for another package only: still a finding for nginx.
+            adv(serde_json::json!({"id": "DEBIAN-CVE-2023-44487",
+                "affected": [entry("dnsdist", "unimportant"), entry("nginx", "not yet assigned")]})),
+            // No triage at all (another source): kept.
+            adv(serde_json::json!({"id": "GHSA-yyyy", "aliases": ["CVE-2024-9"]})),
+        ];
+        let ids: Vec<String> = findings_for(&pkg, &coord, &advs)
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(ids, ["CVE-2023-44487", "CVE-2024-9"]);
     }
 
     #[test]

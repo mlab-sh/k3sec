@@ -49,6 +49,11 @@ Coordinates are **deduplicated across images** (every Debian 12 image shares
   finding listing both in `advisories`. A distro erratum fixing several CVEs
   (`RLSA-…`) gives one finding per CVE. An advisory with no CVE keeps its own id
   (`GHSA-…`, `GO-…`).
+- **Debian "unimportant"**: an advisory Debian triaged `unimportant` for this
+  package (`ecosystem_specific.urgency`: disputed, or harmless as Debian builds
+  it) is not a finding. Only this package's entries count: `CVE-2023-44487` is
+  `end-of-life` for `dnsdist`, which says nothing about `nginx`. On Debian 12:
+  3 of 8 advisories for nginx, 7 of 39 for glibc.
 - **Fixed version**: the smallest `fixed` of a range that contains the
   installed version, for **this** package in **this** ecosystem (an Alpine record
   lists every branch: `Alpine:v3.18 … fixed 1.36.1-r7`,

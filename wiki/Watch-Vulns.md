@@ -51,8 +51,10 @@ A Go image with nothing loaded from OS packages (`caddy:2.7.6`, `-o json`):
 ```
 
 The 210 are in the Alpine base (dormant) and in Go modules of the static
-`caddy` binary, which are [`unknown`](Reachability): no loaded finding, so no
-`vulnerability` event, and the summary is `info`.
+`caddy` binary. This output is from 1.4.0, where those modules were
+[`unknown`](Reachability): no loaded finding, so no `vulnerability` event, and
+the summary is `info`. Since 1.5.1 the modules of the running `caddy` binary
+are `loaded`, and their vulnerabilities are reported.
 
 ## Severity
 

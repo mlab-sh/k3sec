@@ -5,9 +5,9 @@ running process is a different problem from a CVE in a file nobody executes.
 
 | Tag | Meaning |
 |-----|---------|
-| `loaded` | At least one file of the package is mapped by a process of the container (binary or shared library), or was exec'd since k3sec started (`watch --vulns --ebpf`). Node components (k3s, containerd, kernel) are always loaded. |
+| `loaded` | At least one file of the package is mapped by a process of the container (binary or shared library), or was exec'd since k3sec started (`watch --vulns --ebpf`). The Go modules of a running binary. Node components (k3s, containerd, kernel) are always loaded. |
 | `dormant` | OS package with no file mapped or executed: on disk, not running. |
-| `unknown` | Language dependency (lockfile, Go module). Not determinable from memory maps. |
+| `unknown` | Language dependency from a lockfile, or a Go module of a binary that is not running. Not determinable from memory maps. |
 
 Lab numbers: nginx 6 loaded / 143 dormant, httpd 8 / 118, Rocky 7 / 111,
 redis 2 / 87.
@@ -58,9 +58,11 @@ at it, and loops stop after 40 hops.
 
 An interpreter (Node, Python, Ruby, PHP) maps itself and its native extensions,
 not your `lodash`: the JavaScript is read from disk and compiled in memory.
-Maps can't tell which packages were `require`d. Go modules sit inside a static
-binary: the binary is mapped, but whether a vulnerable function of a module is
-reachable is another question. Both are reported `unknown`, never `dormant`.
+Maps can't tell which packages were `require`d: reported `unknown`, never
+`dormant`. Go is different: a Go binary is statically linked, so when it runs,
+every module it was built with is in memory with it. The modules of a running
+Go binary are `loaded` (since 1.5.1); those of a Go binary found on disk but
+not running stay `unknown`.
 
 ## Limits
 

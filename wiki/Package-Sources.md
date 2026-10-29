@@ -93,7 +93,7 @@ On the lab:
 | coredns | 162 | the `coredns` binary |
 | local-path-provisioner | 55 | its binary |
 
-Language deps are always [`unknown`](Reachability#why-language-deps-are-unknown).
+Language deps are [`unknown`](Reachability#why-language-deps-are-unknown), except the Go modules of a running binary, which are `loaded`.
 
 ## purls
 
