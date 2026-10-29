@@ -51,8 +51,8 @@ Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
-Release builds include the eBPF probe and RPM support, for x86_64 and aarch64
-Linux (glibc 2.35+: Debian 12, Ubuntu 22.04, RHEL 9 and later).
+Release builds include the eBPF probe and RPM support, for x86_64 Linux
+(glibc 2.35+: Debian 12, Ubuntu 22.04, RHEL 9 and later).
 
 **apt** (Debian / Ubuntu)
 
@@ -64,7 +64,7 @@ Types: deb
 URIs: https://apt.mlab.sh
 Suites: stable
 Components: main
-Architectures: amd64 arm64
+Architectures: amd64
 Signed-By: /etc/apt/keyrings/mlab.asc
 EOF
 sudo apt update && sudo apt install k3sec

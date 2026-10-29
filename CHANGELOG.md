@@ -33,9 +33,9 @@ k3sec in the mlab ecosystem: on every node, k3sec runs as a tool of
     `PERFMON`, `SYS_RESOURCE`, `SYS_PTRACE` and `DAC_READ_SEARCH`.
   - Each node enrols once with a cluster enrolment code; its keys stay on the
     node.
-- **Packages**: `.deb` on apt.mlab.sh and `.rpm` on pkg.mlab.sh, for amd64 and
-  arm64. The release binaries include the eBPF probe (verified for each
-  architecture in the release workflow).
+- **Packages**: `.deb` on apt.mlab.sh and `.rpm` on pkg.mlab.sh, for x86_64.
+  The release binary includes the eBPF probe (verified by the release
+  workflow).
   - A `SHA256SUMS` file is signed keyless with Sigstore.
   - A `k3sec.service` unit (disabled) for standalone host use.
 - `LICENSE` (Apache-2.0).

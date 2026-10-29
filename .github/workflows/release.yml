@@ -58,15 +58,13 @@ jobs:
         include:
           # 22.04 on purpose (as postmortem): the glibc floor is the build
           # host's, and 22.04 (2.35) still runs on Debian 12 and Ubuntu 22.04.
+          # x86_64 only for now. aarch64 is one more entry,
+          # { target: aarch64-unknown-linux-gnu, ..., deb: arm64, oci: arm64 }, plus
+          # gcc-aarch64-linux-gnu and its CARGO_TARGET_*_LINKER / CC_* / AR_* env.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, deb: amd64, oci: amd64 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, deb: arm64, oci: arm64 }
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      # C code built for the target: SQLite (rpmdb), ring.
-      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
     steps:
       - uses: actions/checkout@v4
 
@@ -85,12 +83,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-
-      - name: Cross-compilation tools (ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       # The prebuilt static binary: `cargo install bpf-linker` needs a system
       # LLVM of the exact major it was released for (23 for 0.12).
@@ -133,8 +125,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/k3sec" "k3sec-linux-${{ matrix.oci }}"
           echo "file=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      # --no-strip: the release profile strips already, and the host strip
-      # fails on the aarch64 binary.
+      # --no-strip: the release profile strips already.
       - name: Build .deb and .rpm
         id: pkgs
         run: |
@@ -174,7 +165,6 @@ jobs:
           mkdir -p dist
           find artifacts -type f -exec cp {} dist/ \;
           ls -la dist
-          # The two arches embed different BPF objects (registers differ).
           cat dist/bpf-*.sha256
 
       # postmortem publishes no checksums; k3sec adds them, signed keyless
@@ -231,8 +221,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # amd64 only while mlab-agent's packages are: add linux/arm64 once
-      # apt.mlab.sh carries mlab-agent for arm64 (the k3sec binary is built).
+      # amd64 only, like the binaries above.
       - name: Image
         uses: docker/build-push-action@v6
         with:
