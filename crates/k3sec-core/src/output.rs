@@ -21,7 +21,7 @@ pub enum OutputFormat {
     /// Colored, human-readable single-line output.
     #[default]
     Pretty,
-    /// Newline-delimited JSON (one event per line).
+    /// JSON: one event per line (NDJSON) for streams, one document for reports.
     Json,
 }
 

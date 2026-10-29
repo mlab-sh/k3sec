@@ -283,11 +283,19 @@ pub async fn match_images(
             }
         }
     }
-    // Per-CVE lookups for the rest (CVSS, EU KEV), loaded code first.
+    // Per-CVE lookups for the rest (CVSS, EU KEV), loaded code first. Kernel
+    // CPE matches (thousands, all "loaded") would eat the whole budget: skipped.
+    let cpe_purls: HashSet<&str> = todo
+        .iter()
+        .flat_map(|&i| &images[i].packages)
+        .filter(|p| matches!(p.coordinate, Some(Coordinate::Cpe { .. })))
+        .map(|p| p.purl.as_str())
+        .collect();
     let mut wanted: Vec<(bool, String)> = per_image
         .iter()
         .flat_map(|(_, m, _)| m.values().flatten())
         .filter(|f| f.id.starts_with("CVE-") && f.cvss.is_none())
+        .filter(|f| !cpe_purls.contains(f.purl.as_str()))
         .map(|f| (f.reachability != Reachability::Loaded, f.id.clone()))
         .collect();
     wanted.sort();
@@ -458,7 +466,8 @@ pub fn findings_for(
             }
         }
     }
-    // Kernel CPE matches run in the thousands: don't enrich them one by one.
+    // Kernel CPE matches aren't enriched one by one (see `match_images`):
+    // without the KEV catalogue they'd all read "unknown".
     if matches!(coord, Coordinate::Cpe { .. }) {
         by_id
             .values_mut()
