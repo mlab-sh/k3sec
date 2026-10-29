@@ -86,11 +86,21 @@ mod tests {
             .arg("5")
             .spawn()
             .unwrap();
-        let via_pid = h.of_pid(child.id());
+        let direct = h.of_path("/bin/sleep");
+        assert!(direct.is_some());
+        // `spawn` can return before `/proc/<pid>/exe` points to the new image
+        // (vfork released early on some kernels, seen on GitHub's 22.04
+        // runners): it is still the test binary for a moment.
+        let mut via_pid = None;
+        for _ in 0..100 {
+            via_pid = h.of_pid(child.id());
+            if via_pid == direct {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         child.kill().ok();
         child.wait().ok();
-        let direct = h.of_path("/bin/sleep");
-        assert!(via_pid.is_some());
         assert_eq!(via_pid, direct);
     }
 }
