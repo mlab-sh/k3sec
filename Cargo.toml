@@ -4,6 +4,7 @@ members = [
     "crates/k3sec",
     "crates/k3sec-core",
     "crates/k3sec-engine",
+    "crates/k3sec-inventory",
     "crates/k3sec-k8s",
     "crates/k3sec-probe",
     "crates/k3sec-probe-common",
@@ -17,6 +18,7 @@ default-members = [
     "crates/k3sec",
     "crates/k3sec-core",
     "crates/k3sec-engine",
+    "crates/k3sec-inventory",
     "crates/k3sec-k8s",
     "crates/k3sec-probe",
     "crates/k3sec-probe-common",
@@ -32,6 +34,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 k3sec-core = { path = "crates/k3sec-core" }
 k3sec-engine = { path = "crates/k3sec-engine" }
+k3sec-inventory = { path = "crates/k3sec-inventory" }
 k3sec-k8s = { path = "crates/k3sec-k8s" }
 k3sec-probe = { path = "crates/k3sec-probe" }
 
