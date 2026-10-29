@@ -270,17 +270,23 @@ pub struct Configured {
 
 /// The tool's table in the agent's local policy (`[tools.k3sec.settings]`),
 /// written by the host admin, never by mlab: the ceiling of every [`Config`].
+/// Flat on purpose (booleans, lists): mlab's policy editor writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Settings {
     /// Sources mlab may turn on.
-    pub allow: Sources,
+    pub allow_k8s_events: bool,
+    pub allow_logs: bool,
+    pub allow_ebpf: bool,
+    pub allow_rules: bool,
+    pub allow_vulns: bool,
     /// Namespaces mlab may watch; empty = all.
     pub namespaces: Vec<String>,
-    /// Named YARA rule files or directories on the host.
-    pub rulesets: BTreeMap<String, String>,
+    /// YARA rule files or directories on the host. Each is offered to mlab
+    /// by its last path component (`/usr/share/k3sec/rules` → `rules`).
+    pub rulesets: Vec<String>,
     pub allow_remote_rules: bool,
-    /// This node's name (`$NODE_NAME` otherwise).
+    /// This node's name (`$NODE_NAME`, then the tool's own pod, otherwise).
     pub node: Option<String>,
     /// Kubeconfig path; in-cluster config otherwise.
     pub kubeconfig: Option<String>,
@@ -291,20 +297,46 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            allow: Sources {
-                k8s_events: true,
-                logs: false,
-                ebpf: true,
-                rules: true,
-                vulns: true,
-            },
+            allow_k8s_events: true,
+            allow_logs: false,
+            allow_ebpf: true,
+            allow_rules: true,
+            allow_vulns: true,
             namespaces: Vec::new(),
-            rulesets: BTreeMap::new(),
+            rulesets: Vec::new(),
             allow_remote_rules: false,
             node: None,
             kubeconfig: None,
             backlog_events: 50_000,
         }
+    }
+}
+
+impl Settings {
+    /// The sources this policy lets mlab turn on.
+    pub fn allow(&self) -> Sources {
+        Sources {
+            k8s_events: self.allow_k8s_events,
+            logs: self.allow_logs,
+            ebpf: self.allow_ebpf,
+            rules: self.allow_rules,
+            vulns: self.allow_vulns,
+        }
+    }
+
+    /// `(name, path)` of each ruleset; the name is what mlab sees.
+    pub fn rulesets(&self) -> Vec<(String, &str)> {
+        self.rulesets
+            .iter()
+            .map(|p| {
+                let name = p.trim_end_matches('/').rsplit('/').next().unwrap_or(p);
+                let name = name
+                    .strip_suffix(".yar")
+                    .or_else(|| name.strip_suffix(".yara"))
+                    .unwrap_or(name);
+                (name.to_string(), p.as_str())
+            })
+            .collect()
     }
 }
 

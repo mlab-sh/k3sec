@@ -19,7 +19,7 @@ pub struct Effective {
 pub fn clamp(settings: &Settings, wanted: &Config) -> (Config, Vec<String>) {
     let mut c = wanted.clone();
     let mut cut = Vec::new();
-    let a = &settings.allow;
+    let a = settings.allow();
     let mut off = |on: &mut bool, allowed: bool, name: &str| {
         if *on && !allowed {
             *on = false;
@@ -59,16 +59,17 @@ pub fn clamp(settings: &Settings, wanted: &Config) -> (Config, Vec<String>) {
         c.rules_source = None;
         cut.push("remote rules over 1 MiB".into());
     }
+    let rulesets = settings.rulesets();
     if let Some(name) = &c.ruleset {
-        if !settings.rulesets.contains_key(name) {
+        if !rulesets.iter().any(|(n, _)| n == name) {
             cut.push(format!("ruleset {name} not in policy"));
             c.ruleset = None;
         }
     }
     if c.sources.rules && c.ruleset.is_none() && c.rules_source.is_none() {
         // Fall back to the only ruleset when there is exactly one.
-        match settings.rulesets.keys().next() {
-            Some(only) if settings.rulesets.len() == 1 => c.ruleset = Some(only.clone()),
+        match rulesets.first() {
+            Some((only, _)) if rulesets.len() == 1 => c.ruleset = Some(only.clone()),
             _ => {
                 c.sources.rules = false;
                 cut.push("rules on but no ruleset chosen".into());
@@ -104,11 +105,12 @@ pub fn effective(
         std::fs::write(&path, src)?;
         Some(path)
     } else {
+        let rulesets = settings.rulesets();
         config
             .ruleset
             .as_ref()
-            .and_then(|n| settings.rulesets.get(n))
-            .map(PathBuf::from)
+            .and_then(|n| rulesets.iter().find(|(r, _)| r == n))
+            .map(|(_, p)| PathBuf::from(p))
     };
     Ok(Effective {
         config,
@@ -140,15 +142,9 @@ mod tests {
 
     fn settings() -> Settings {
         Settings {
-            allow: Sources {
-                k8s_events: true,
-                logs: false,
-                ebpf: true,
-                rules: true,
-                vulns: true,
-            },
+            allow_logs: false,
             namespaces: vec!["prod".into(), "staging".into()],
-            rulesets: [("default".to_string(), "/usr/share/k3sec/rules".to_string())].into(),
+            rulesets: vec!["/usr/share/k3sec/rules".into()],
             ..Settings::default()
         }
     }
@@ -174,11 +170,7 @@ mod tests {
         assert_eq!(c.namespaces, ["prod"]);
         assert_eq!(c.kinds, ["exec"]);
         assert!(c.rules_source.is_none());
-        assert_eq!(
-            c.ruleset.as_deref(),
-            Some("default"),
-            "single ruleset picked"
-        );
+        assert_eq!(c.ruleset.as_deref(), Some("rules"), "single ruleset picked");
         assert!(c.sources.rules);
         for reason in [
             "logs not allowed",

@@ -101,10 +101,14 @@ path = "/usr/bin/k3sec"
 sha256 = "<mlab-agent tools hash /usr/bin/k3sec>"
 enabled = true
 
-[tools.k3sec.settings]          # k3sec_api::Settings; every key optional
-allow = { k8s_events = true, logs = false, ebpf = true, rules = true, vulns = true }
+[tools.k3sec.settings]          # k3sec_api::Settings; every key optional, all flat
+allow_k8s_events = true         # sources mlab may turn on
+allow_logs = false
+allow_ebpf = true
+allow_rules = true
+allow_vulns = true
 namespaces = []                 # namespaces mlab may watch; empty = all
-rulesets = { default = "/usr/share/k3sec/rules" }
+rulesets = ["/usr/share/k3sec/rules"]   # offered to mlab by name: "rules"
 allow_remote_rules = false      # accept YARA source sent by mlab
 node = "node-1"                 # else $NODE_NAME
 kubeconfig = "/etc/rancher/k3s/k3s.yaml"   # else in-cluster
@@ -115,11 +119,11 @@ backlog_events = 50000
 
 | Field | |
 |---|---|
-| `sources {k8s_events, logs, ebpf, rules, vulns}` | each also needs `allow.<source>`; `rules` needs `ebpf` |
+| `sources {k8s_events, logs, ebpf, rules, vulns}` | each also needs `allow_<source>`; `rules` needs `ebpf` |
 | `kinds` | eBPF kinds; empty = all |
 | `namespaces` | empty = every allowed namespace; outside `settings.namespaces` is cut |
 | `min_severity` | events below are not sent |
-| `ruleset` | a name from `settings.rulesets` |
+| `ruleset` | a name from `settings.rulesets` (its last path component, `.yar` dropped) |
 | `rules_source` | YARA source (≤ 1 MiB), only with `allow_remote_rules`; replaces `ruleset` |
 
 `configure` applies the intersection and answers what is in force plus, in

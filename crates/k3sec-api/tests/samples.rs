@@ -52,7 +52,7 @@ pub fn status() -> Status {
             os_image: "Ubuntu 24.04.1 LTS".into(),
         }),
         config: Config::default(),
-        allow: Settings::default().allow,
+        allow: Settings::default().allow(),
         allowed_namespaces: vec![],
         rulesets: vec!["default".into()],
         allow_remote_rules: false,

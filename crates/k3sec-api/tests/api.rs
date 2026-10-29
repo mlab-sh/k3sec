@@ -64,8 +64,21 @@ fn settings_default_and_partial_policy_tables() {
     let s: Settings = from_cbor(&bytes).unwrap();
     assert!(s.allow_remote_rules);
     assert_eq!(s.namespaces, ["prod"]);
-    assert_eq!(s.allow, Settings::default().allow);
+    assert_eq!(s.allow(), Settings::default().allow());
     assert_eq!(s.backlog_events, 50_000);
+}
+
+#[test]
+fn rulesets_are_named_by_their_last_component() {
+    let s = Settings {
+        rulesets: vec![
+            "/usr/share/k3sec/rules/".into(),
+            "/etc/k3sec/extra.yar".into(),
+        ],
+        ..Settings::default()
+    };
+    let names: Vec<String> = s.rulesets().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["rules", "extra"]);
 }
 
 #[test]

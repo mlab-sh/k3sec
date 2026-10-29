@@ -378,6 +378,8 @@ async fn facts(client: Client, shared: Shared) {
 }
 
 async fn heartbeat(shared: Shared, writer: Writer) {
+    // The first one after the start-up facts (cluster id, node versions).
+    tokio::time::sleep(Duration::from_secs(10)).await;
     let mut tick = tokio::time::interval(HEARTBEAT);
     loop {
         tick.tick().await;
@@ -398,9 +400,9 @@ fn status(s: &State) -> api::Status {
         cluster_id: s.cluster_id.clone(),
         node_versions: s.node_versions.as_ref().map(convert::node_versions),
         config: s.effective.config.clone(),
-        allow: s.settings.allow,
+        allow: s.settings.allow(),
         allowed_namespaces: s.settings.namespaces.clone(),
-        rulesets: s.settings.rulesets.keys().cloned().collect(),
+        rulesets: s.settings.rulesets().into_iter().map(|(n, _)| n).collect(),
         allow_remote_rules: s.settings.allow_remote_rules,
         sources: s
             .states
