@@ -2,7 +2,7 @@
 //! own version stack, as [`PodContainer`] / [`NodeVersions`] core types.
 
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
 use kube::api::ListParams;
 use kube::{Api, Client};
 
@@ -100,6 +100,36 @@ pub async fn node_versions(client: &Client, node: Option<&str>) -> Result<NodeVe
         kernel: info.kernel_version,
         os_image: info.os_image,
     })
+}
+
+/// A stable cluster id: the UID of the `kube-system` namespace (needs `get
+/// namespaces`). `None` when it can't be read.
+pub async fn cluster_id(client: &Client) -> Option<String> {
+    let api: Api<Namespace> = Api::all(client.clone());
+    match api.get("kube-system").await {
+        Ok(ns) => ns.metadata.uid,
+        Err(e) => {
+            tracing::warn!("cluster id unavailable (RBAC: get namespaces): {e}");
+            None
+        }
+    }
+}
+
+/// The node this process runs on, when it runs in a pod: its own pod (the
+/// hostname, in the namespace of its service account) gives `spec.nodeName`.
+pub async fn own_node(client: &Client) -> Option<String> {
+    let pod = hostname()?;
+    let ns =
+        std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace").ok()?;
+    let api: Api<Pod> = Api::namespaced(client.clone(), ns.trim());
+    api.get(&pod).await.ok()?.spec?.node_name
+}
+
+fn hostname() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
 }
 
 #[cfg(test)]

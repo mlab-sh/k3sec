@@ -24,7 +24,7 @@ use crate::cache::Cache;
 use crate::events::{finding_event, summary_event};
 use crate::inventory::{scan_image, ImageScan};
 use crate::lang::LangLimits;
-use crate::model::Reachability;
+use crate::model::{ImageInventory, Reachability};
 use crate::procfs::pids_by_container;
 use crate::reach::mark_loaded;
 use crate::rootfs::Rootfs;
@@ -46,10 +46,27 @@ pub struct ExecObservation {
     pub path: String,
 }
 
+impl ExecObservation {
+    /// From an eBPF `exec` event of the stream, if it is one.
+    pub fn from_event(ev: &k3sec_core::SecEvent) -> Option<Self> {
+        if ev.source != k3sec_core::Source::Ebpf || ev.kind != "exec" {
+            return None;
+        }
+        Some(Self {
+            container_id: ev.payload["container_id"].as_str()?.to_string(),
+            pid: ev.payload["pid"].as_u64()? as u32,
+            path: ev.payload["path"].as_str()?.to_string(),
+        })
+    }
+}
+
 pub struct VulnWatcher {
-    source: Arc<dyn VulnSource>,
+    /// `None`: inventory only (mlab-agent mode, where matching happens in mlab).
+    source: Option<Arc<dyn VulnSource>>,
     cache: Cache,
     limits: LangLimits,
+    /// Receives every (re)inventoried image: first scan and loaded promotions.
+    inventories: Option<mpsc::Sender<ImageInventory>>,
 }
 
 struct Tracked {
@@ -60,12 +77,19 @@ struct Tracked {
 type Done = (String, Option<(ImageScan, ImageVulns)>);
 
 impl VulnWatcher {
-    pub fn new(source: Arc<dyn VulnSource>, cache: Cache, limits: LangLimits) -> Self {
+    pub fn new(source: Option<Arc<dyn VulnSource>>, cache: Cache, limits: LangLimits) -> Self {
         Self {
             source,
             cache,
             limits,
+            inventories: None,
         }
+    }
+
+    /// Also publish each image inventory (best effort, never blocks).
+    pub fn with_inventory_sink(mut self, tx: mpsc::Sender<ImageInventory>) -> Self {
+        self.inventories = Some(tx);
+        self
     }
 
     pub async fn run(
@@ -113,12 +137,16 @@ impl VulnWatcher {
                         by_container.insert(c.container_id.clone(), key.clone());
                     }
                     let inv = &scan.inventory;
-                    let mut events = vec![summary_event(inv, &vulns)];
-                    events.extend(
-                        vulns.findings.iter()
-                            .filter(|f| f.reachability == Reachability::Loaded)
-                            .map(|f| finding_event(inv, f)),
-                    );
+                    self.publish(inv);
+                    let mut events = Vec::new();
+                    if self.source.is_some() {
+                        events.push(summary_event(inv, &vulns));
+                        events.extend(
+                            vulns.findings.iter()
+                                .filter(|f| f.reachability == Reachability::Loaded)
+                                .map(|f| finding_event(inv, f)),
+                        );
+                    }
                     for ev in events {
                         if sink.send(ev).await.is_err() {
                             return Ok(()); // printer gone
@@ -130,7 +158,11 @@ impl VulnWatcher {
                     let Some(t) = by_container.get(&e.container_id).and_then(|k| images.get_mut(k)) else {
                         continue;
                     };
-                    for ev in on_exec(t, &e) {
+                    let (events, changed) = on_exec(t, &e);
+                    if changed {
+                        self.publish(&t.scan.inventory);
+                    }
+                    for ev in events {
                         if sink.send(ev).await.is_err() {
                             return Ok(());
                         }
@@ -142,8 +174,19 @@ impl VulnWatcher {
     }
 }
 
-/// Promote the packages owning the exec'd binary; events for their vulns.
-fn on_exec(t: &mut Tracked, e: &ExecObservation) -> Vec<k3sec_core::SecEvent> {
+impl VulnWatcher {
+    fn publish(&self, inv: &ImageInventory) {
+        if let Some(tx) = &self.inventories {
+            if tx.try_send(inv.clone()).is_err() {
+                tracing::debug!("inventory sink full or closed; dropping update");
+            }
+        }
+    }
+}
+
+/// Promote the packages owning the exec'd binary; events for their vulns,
+/// and whether any package changed.
+fn on_exec(t: &mut Tracked, e: &ExecObservation) -> (Vec<k3sec_core::SecEvent>, bool) {
     // The kernel's view of the binary (already canonical), else the argv path.
     let path = std::fs::read_link(format!("/proc/{}/exe", e.pid))
         .map(|p| {
@@ -153,26 +196,27 @@ fn on_exec(t: &mut Tracked, e: &ExecObservation) -> Vec<k3sec_core::SecEvent> {
         })
         .unwrap_or_else(|_| e.path.clone());
     if !path.starts_with('/') {
-        return Vec::new();
+        return (Vec::new(), false);
     }
     let fs = Rootfs::of_pid(e.pid);
     let inv = &mut t.scan.inventory;
     let changed = mark_loaded(&mut inv.packages, &t.scan.index, &fs, [path.as_str()]);
     let mut events = Vec::new();
-    for i in changed {
+    for &i in &changed {
         let purl = &inv.packages[i].purl;
         for f in t.vulns.findings.iter_mut().filter(|f| &f.purl == purl) {
             f.reachability = Reachability::Loaded;
             events.push(finding_event(inv, f));
         }
     }
-    events
+    let changed = !changed.is_empty();
+    (events, changed)
 }
 
 async fn scan_task(
     key: String,
     first: PodContainer,
-    source: Arc<dyn VulnSource>,
+    source: Option<Arc<dyn VulnSource>>,
     cache: Cache,
     limits: LangLimits,
     permits: Arc<Semaphore>,
@@ -198,14 +242,15 @@ async fn scan_task(
     }
     let result = match scan {
         Some(scan) => {
-            let vulns = match_images(
-                source.as_ref(),
-                &cache,
-                std::slice::from_ref(&scan.inventory),
-            )
-            .await
-            .pop()
-            .unwrap_or_default();
+            let vulns = match &source {
+                Some(src) => {
+                    match_images(src.as_ref(), &cache, std::slice::from_ref(&scan.inventory))
+                        .await
+                        .pop()
+                        .unwrap_or_default()
+                }
+                None => ImageVulns::default(),
+            };
             Some((scan, vulns))
         }
         None => {

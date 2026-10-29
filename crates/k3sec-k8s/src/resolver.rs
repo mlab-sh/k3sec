@@ -27,8 +27,8 @@ pub struct PodNotify {
     /// Also report containers already running when the watch starts
     /// (`--rollback`); otherwise only containers that appear afterwards.
     pub existing: bool,
-    /// Only report pods of this namespace (`--namespace`).
-    pub namespace: Option<String>,
+    /// Only report pods of these namespaces; empty = all.
+    pub namespaces: Vec<String>,
 }
 
 /// A live, node-scoped map of container runtime IDs to their owning pod.
@@ -159,11 +159,8 @@ impl NodePodResolver {
         let Some(notify) = &self.notify else {
             return;
         };
-        if notify
-            .namespace
-            .as_ref()
-            .is_some_and(|ns| pod.metadata.namespace.as_ref() != Some(ns))
-        {
+        let ns = pod.metadata.namespace.as_deref().unwrap_or_default();
+        if !notify.namespaces.is_empty() && !notify.namespaces.iter().any(|n| n == ns) {
             return;
         }
         let fresh: Vec<PodContainer> = {

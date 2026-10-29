@@ -12,8 +12,8 @@ pub mod logs;
 pub mod resolver;
 pub mod workload;
 
-pub use client::{build_client, preflight, Backoff};
+pub use client::{build_client, build_incluster_client, preflight, Backoff};
 pub use events::K8sEventSource;
 pub use logs::K8sLogSource;
 pub use resolver::{NodePodResolver, PodNotify};
-pub use workload::{list_node_containers, node_versions, pod_containers};
+pub use workload::{cluster_id, list_node_containers, node_versions, own_node, pod_containers};

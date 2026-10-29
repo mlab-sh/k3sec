@@ -8,7 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest, SecEvent, Source};
+use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
 use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
 use k3sec_k8s::{
@@ -173,7 +173,7 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         let (ctx, crx) = mpsc::channel(256);
         let (etx, erx) = mpsc::channel::<ExecObservation>(1024);
         let watcher = VulnWatcher::new(
-            std::sync::Arc::new(client),
+            Some(std::sync::Arc::new(client)),
             args.mlab.cache(),
             LangLimits::default(),
         );
@@ -181,7 +181,7 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         PodNotify {
             tx: ctx,
             existing: args.rollback,
-            namespace: args.namespace.clone(),
+            namespaces: args.namespace.clone().into_iter().collect(),
         }
     });
     let resolver = (args.ebpf || args.vulns)
@@ -216,7 +216,7 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     let exec_tx = vuln_slot.as_ref().map(|(_, _, _, etx)| etx.clone());
     let printer_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            if let Some((etx, obs)) = exec_tx.as_ref().zip(exec_observation(&event)) {
+            if let Some((etx, obs)) = exec_tx.as_ref().zip(ExecObservation::from_event(&event)) {
                 let _ = etx.try_send(obs);
             }
             printer.emit(&event);
@@ -288,16 +288,4 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// An eBPF exec event as a reachability observation for `--vulns`.
-fn exec_observation(ev: &SecEvent) -> Option<ExecObservation> {
-    if ev.source != Source::Ebpf || ev.kind != "exec" {
-        return None;
-    }
-    Some(ExecObservation {
-        container_id: ev.payload["container_id"].as_str()?.to_string(),
-        pid: ev.payload["pid"].as_u64()? as u32,
-        path: ev.payload["path"].as_str()?.to_string(),
-    })
 }

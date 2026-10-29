@@ -28,6 +28,16 @@ pub async fn build_client(kubeconfig: Option<&Path>) -> Result<Client> {
     }
 }
 
+/// Build a [`Client`] from the pod's service account, reaching the API server
+/// by DNS (`kubernetes.default.svc`). Unlike [`build_client`], it needs no
+/// `KUBERNETES_SERVICE_*` variables: a tool started by mlab-agent runs with an
+/// empty environment.
+pub fn build_incluster_client() -> Result<Client> {
+    let config = Config::incluster_dns()
+        .context("no in-cluster service account (set `kubeconfig` in the tool settings)")?;
+    Client::try_from(config).context("failed to construct Kubernetes client")
+}
+
 /// Perform a trivial API call so connection/RBAC problems surface up-front with
 /// a readable message, before we start long-running watches.
 pub async fn preflight(client: &Client) -> Result<()> {
