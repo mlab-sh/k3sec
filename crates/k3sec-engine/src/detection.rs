@@ -127,6 +127,7 @@ mod tests {
             trigger: ScanTrigger::Exec,
             pid: 4242,
             path: None,
+            container_id: None,
             container: Some(ContainerInfo {
                 namespace: "default".to_string(),
                 pod: "evil-pod".to_string(),

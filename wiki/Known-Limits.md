@@ -59,10 +59,11 @@ What k3sec does **not** see yet, and how it shows up.
   scanned as its interpreter (`/bin/busybox`), not as the script's text.
 - **Nodes inside containers (k3d, kind, k3s in Docker).** The node's PID
   namespace is not the kernel's, so the PIDs eBPF reports don't exist in the
-  node's `/proc`. Events still reach their pod (through the cgroup id), but
-  YARA on exec and the exec → loaded promotion, which read `/proc/<pid>`, see
-  nothing. On a real node (or VM), `hostPID` is the kernel's namespace and all
-  of it works.
+  node's `/proc`. Events still reach their pod (through the cgroup id), and
+  since 1.5.2 YARA on exec and the exec → loaded promotion reach the binary
+  through another process of the container. YARA on `file_write` still reads
+  the writer's `/proc/<pid>/root` and sees nothing there. On a real node (or
+  VM), `hostPID` is the kernel's namespace and all of it works.
 - **tracefs** must be mounted on the node at `/sys/kernel/tracing` (systemd
   does it); the DaemonSet mounts it from there. Without it the `ebpf` source
   reports `tracefs not found` and the others keep going.

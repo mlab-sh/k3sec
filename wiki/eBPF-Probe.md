@@ -7,7 +7,7 @@ came from:
 |------|------|----------|--------|
 | `exec` | tracepoint `sched:sched_process_exec` | info | every successful exec in a container |
 | `connect` | kprobes `tcp_v4_connect`, `tcp_v6_connect` | info | outbound TCP, except to `0.0.0.0`, `::` and loopback (health checks) |
-| `file_write` | tracepoint `syscalls:sys_enter_openat` (write flags) | warning | paths under `/etc/`, `/usr/bin/`, `/root/`, `/var/run/secrets` (in-kernel) |
+| `file_write` | kprobe `do_sys_openat2` (every `open`, `openat`, `openat2`, `creat` with write flags) | warning | paths under `/etc/`, `/usr/bin/`, `/root/`, `/var/run/secrets` (in-kernel) |
 
 ```bash
 sudo k3sec watch --ebpf
@@ -60,6 +60,13 @@ reach no pod. An event whose container the pod watch does not know yet waits
 2 s for it, without holding back the others. A container still unknown then is
 not a pod (the node's own containers): its next events go out at once, for a
 minute.
+
+Writes are caught on the kernel function every open ends in, not on the
+`syscalls:sys_enter_openat` tracepoint, for the same reason as exec below: on
+the lab's kernel, 7 of 200 writes under `/etc` reached the tracepoint's
+program (and `open` / `creat` never pass there); on the kprobe, 200 of 200. A
+kernel that inlined `do_sys_openat2` gets no `file_write` (a warning says
+so), the other kinds keep going.
 
 Exec capture uses `sched:sched_process_exec`, not `syscalls:sys_enter_execve`:
 on the lab's kernel (7.0), BPF programs on the syscall tracepoint ran for 9 of

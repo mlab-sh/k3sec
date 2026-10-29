@@ -198,9 +198,16 @@ fn on_exec(t: &mut Tracked, e: &ExecObservation) -> (Vec<k3sec_core::SecEvent>, 
     if !path.starts_with('/') {
         return (Vec::new(), false);
     }
-    let fs = Rootfs::of_pid(e.pid);
+    // A short exec is gone already: the image's root as inventoried resolves
+    // the path the same way.
+    let own = Rootfs::of_pid(e.pid);
+    let fs = if std::fs::read_dir(own.root()).is_ok() {
+        &own
+    } else {
+        &t.scan.rootfs
+    };
     let inv = &mut t.scan.inventory;
-    let changed = mark_loaded(&mut inv.packages, &t.scan.index, &fs, [path.as_str()]);
+    let changed = mark_loaded(&mut inv.packages, &t.scan.index, fs, [path.as_str()]);
     let mut events = Vec::new();
     for &i in &changed {
         let purl = &inv.packages[i].purl;

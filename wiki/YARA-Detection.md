@@ -4,7 +4,10 @@ With `--ebpf --rules <file|dir>`, k3sec scans what the [probe](eBPF-Probe)
 surfaces, with [yara-x](https://github.com/VirusTotal/yara-x):
 
 - **exec**: the executed binary, through `/proc/<pid>/exe`, so even a binary
-  deleted right after it started is scanned. The priority case.
+  deleted right after it started is scanned. The priority case. A process
+  already gone (it ran for a millisecond) is scanned at its exec'd path
+  through the root of a live process of its container: on the lab, 20 of 20
+  execs of a marked binary detected.
 - **file_write**: the file dropped under a sensitive path, debounced (500 ms of
   quiet) so a file being written is scanned once, settled.
 
@@ -40,7 +43,11 @@ probe ──ScanRequest──▶ dispatcher ──▶ [bounded queue] ──▶ 
 The probe only enqueues a reference (pid, path, pod). Workers are OS threads
 (scanning is CPU-bound), `--scan-workers` of them (default: CPU count).
 Artifacts over `--max-scan-size` (default 32 MiB), vanished processes and read
-errors are skipped and counted, never fatal.
+errors are skipped and counted, never fatal. A file found clean is remembered
+by its identity (device, inode, size, mtime) and not read again: 5000 execs of
+one binary cost 0.6 s of CPU instead of 2.8 s on the lab. A changed file is
+scanned again, and a file that matched is never remembered: every exec of it
+is a detection.
 
 `--rules` without `--ebpf` warns and does nothing (real output):
 

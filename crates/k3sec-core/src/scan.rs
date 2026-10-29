@@ -39,8 +39,12 @@ pub struct ScanRequest {
     /// The process that produced the event, used to reach the artifact via
     /// `/proc/<pid>/…` inside the container's mount namespace.
     pub pid: u32,
-    /// For [`ScanTrigger::FileWrite`], the in-container path that was written.
+    /// The in-container path written ([`ScanTrigger::FileWrite`]) or executed
+    /// ([`ScanTrigger::Exec`], as passed to exec).
     pub path: Option<String>,
+    /// The container's runtime id: once `pid` is gone, the artifact is still
+    /// reached through another process of the container.
+    pub container_id: Option<String>,
     /// Pod/namespace/container context, if it was resolved (`None` = unresolved).
     pub container: Option<ContainerInfo>,
     /// The originating process `comm`, for readable detection messages.

@@ -5,8 +5,9 @@
 //! * `execve`     , `sched:sched_process_exec` (executed binary, successful
 //!   execs only).
 //! * `connect`    , kprobes on `tcp_v4_connect` / `tcp_v6_connect` (dest ip:port).
-//! * `file_write` , `syscalls:sys_enter_openat`, filtered in-kernel to *write*
-//!   opens under sensitive paths, so userspace never sees the firehose.
+//! * `file_write` , kprobe on `do_sys_openat2` (every open, openat, openat2 and
+//!   creat), filtered in-kernel to *write* opens under sensitive paths, so
+//!   userspace never sees the firehose.
 //!
 //! On ring-buffer backpressure we bump `DROPS` and return cleanly, never block,
 //! never panic on event data.
@@ -78,24 +79,26 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
 // file_write (openat with write intent, under a sensitive path)
 // ---------------------------------------------------------------------------
 
-/// Tracepoint: `syscalls:sys_enter_openat`. Emits only write-opens under a
-/// sensitive path; everything else is filtered here in the kernel.
-#[tracepoint]
-pub fn k3sec_openat(ctx: TracePointContext) -> u32 {
+/// kprobe: `do_sys_openat2(int dfd, const char __user *filename, struct
+/// open_how *how)`, where every open syscall ends up. Not the
+/// `syscalls:sys_enter_openat` tracepoint: on recent kernels (7.0) its BPF
+/// programs miss most calls, and `open` / `creat` never pass there. Emits only
+/// write-opens under a sensitive path; everything else is filtered here.
+#[kprobe]
+pub fn k3sec_openat(ctx: ProbeContext) -> u32 {
     let _ = try_openat(&ctx);
     0
 }
 
-fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
-    // sys_enter_openat: dfd@16, filename@24, flags@32.
-    let flags: u64 = unsafe { ctx.read_at::<u64>(32) }.unwrap_or(0);
-    if !is_write_open(flags) {
+fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
+    let filename_ptr: *const u8 = ctx.arg(1).ok_or(0i64)?;
+    let how: *const u64 = ctx.arg(2).ok_or(0i64)?;
+    if filename_ptr.is_null() || how.is_null() {
         return Ok(());
     }
-    let Ok(filename_ptr) = (unsafe { ctx.read_at::<*const u8>(24) }) else {
-        return Ok(());
-    };
-    if filename_ptr.is_null() {
+    // `struct open_how` starts with `u64 flags`.
+    let flags: u64 = unsafe { bpf_probe_read_kernel(how) }.unwrap_or(0);
+    if !is_write_open(flags) {
         return Ok(());
     }
 

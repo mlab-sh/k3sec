@@ -135,7 +135,11 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
         attach_tracepoint(ebpf, "k3sec_execve", "sched", "sched_process_exec")?;
     }
     if config.kinds.allows(ProbeKind::FileWrite) {
-        attach_tracepoint(ebpf, "k3sec_openat", "syscalls", "sys_enter_openat")?;
+        // An internal function: a kernel may have inlined it. Then no
+        // file_write, but exec and connect keep going.
+        if let Err(e) = attach_kprobe(ebpf, "k3sec_openat", "do_sys_openat2") {
+            tracing::warn!(error = %format!("{e:#}"), "file_write events unavailable on this kernel");
+        }
     }
     if config.kinds.allows(ProbeKind::Connect) {
         attach_kprobe(ebpf, "k3sec_tcp_v4_connect", "tcp_v4_connect")?;
@@ -222,7 +226,7 @@ fn build_event(
 
     // Fire off a scan request (best-effort, non-blocking) for scannable kinds.
     if let Some(scan_tx) = scan_tx {
-        maybe_request_scan(scan_tx, ev, probe_kind, &comm, info.as_ref());
+        maybe_request_scan(scan_tx, ev, probe_kind, &comm, container_id, info.as_ref());
     }
 
     let (kind_str, severity, message) = match probe_kind {
@@ -271,6 +275,7 @@ fn maybe_request_scan(
     ev: &Event,
     probe_kind: ProbeKind,
     comm: &str,
+    container_id: &str,
     info: Option<&ContainerInfo>,
 ) {
     let trigger = match probe_kind {
@@ -278,13 +283,11 @@ fn maybe_request_scan(
         ProbeKind::FileWrite => ScanTrigger::FileWrite,
         ProbeKind::Connect => return, // no bytes to scan
     };
-    let path =
-        matches!(probe_kind, ProbeKind::FileWrite).then(|| cstr(&ev.filename[..FILENAME_LEN]));
-
     let req = ScanRequest {
         trigger,
         pid: ev.pid,
-        path,
+        path: Some(cstr(&ev.filename[..FILENAME_LEN])),
+        container_id: Some(container_id.to_string()),
         container: info.cloned(),
         comm: comm.to_string(),
     };

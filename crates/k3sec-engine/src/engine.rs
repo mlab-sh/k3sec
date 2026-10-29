@@ -36,12 +36,46 @@ use crate::EngineConfig;
 /// Scan outcome counters, logged on shutdown.
 #[derive(Default)]
 struct ScanStats {
+    /// Already found clean, not read again.
+    cached: AtomicU64,
     scanned: AtomicU64,
     hits: AtomicU64,
     clean: AtomicU64,
     too_big: AtomicU64,
     gone: AtomicU64,
     errors: AtomicU64,
+}
+
+/// Identity of a file: device, inode, size, mtime.
+type FileKey = (u64, u64, u64, i64);
+
+/// Files a scan found clean, by identity: an exec storm of one binary is read
+/// and scanned once. A changed file has another identity; a file that matched
+/// is never remembered, so every exec of it is reported.
+#[derive(Default)]
+struct CleanFiles(std::sync::Mutex<std::collections::HashSet<FileKey>>);
+
+impl CleanFiles {
+    fn key(meta: &std::fs::Metadata) -> FileKey {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino(), meta.len(), meta.mtime())
+    }
+
+    fn contains(&self, key: &FileKey) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(key)
+    }
+
+    fn insert(&self, key: FileKey) {
+        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // shortcut: wholesale reset instead of LRU, fine for a node's binaries
+        if set.len() >= 16_384 {
+            set.clear();
+        }
+        set.insert(key);
+    }
 }
 
 /// The compiled ruleset plus scan configuration.
@@ -76,6 +110,7 @@ impl DetectionEngine {
         cancel: CancellationToken,
     ) -> Result<()> {
         let stats = Arc::new(ScanStats::default());
+        let clean_files = Arc::new(CleanFiles::default());
         let (work_tx, work_rx) = flume::bounded::<ScanRequest>(self.config.workers * 4);
 
         // Worker threads, each with its own Scanner over the shared rules.
@@ -85,9 +120,10 @@ impl DetectionEngine {
             let rx = work_rx.clone();
             let sink = sink.clone();
             let stats = stats.clone();
+            let clean_files = clean_files.clone();
             let max = self.config.max_scan_size;
             workers.push(std::thread::spawn(move || {
-                worker_loop(rules, rx, sink, stats, max)
+                worker_loop(rules, rx, sink, stats, &clean_files, max)
             }));
         }
         drop(work_rx);
@@ -149,24 +185,53 @@ fn worker_loop(
     rx: flume::Receiver<ScanRequest>,
     sink: EventSink,
     stats: Arc<ScanStats>,
+    clean_files: &CleanFiles,
     max_scan_size: u64,
 ) {
+    let siblings = Siblings::default();
     // Reused across every job on this thread, rules are never recompiled.
     let mut scanner = Scanner::new(&rules);
 
     while let Ok(req) = rx.recv() {
-        let Some(artifact) = artifact_path(&req) else {
+        let Some(mut artifact) = artifact_path(&req) else {
             continue;
         };
+        let mut shown = artifact.to_string_lossy().into_owned();
+        let mut meta = std::fs::metadata(&artifact);
+        if matches!(&meta, Err(e) if e.kind() == ErrorKind::NotFound) {
+            // The process is gone (a short exec): the same file through the
+            // root of a live process of its container.
+            if let Some(path) = sibling_path(&req, &siblings) {
+                meta = std::fs::metadata(&path);
+                artifact = path;
+                shown = req.path.clone().unwrap_or_default();
+            }
+        }
+        let key = match meta {
+            Ok(meta) => Some(CleanFiles::key(&meta)),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                tracing::debug!(artifact = %artifact.display(), path = ?req.path, container = ?req.container_id, "artifact gone");
+                stats.gone.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            Err(_) => None,
+        };
+        if key.as_ref().is_some_and(|k| clean_files.contains(k)) {
+            stats.cached.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         match read_capped(&artifact, max_scan_size) {
             Ok(Some(bytes)) => {
                 stats.scanned.fetch_add(1, Ordering::Relaxed);
                 let hits = scan_bytes(&mut scanner, &bytes);
                 if hits.is_empty() {
                     stats.clean.fetch_add(1, Ordering::Relaxed);
+                    if let Some(key) = key {
+                        clean_files.insert(key);
+                    }
                 } else {
                     stats.hits.fetch_add(1, Ordering::Relaxed);
-                    let ev = detection_event(&hits, &req, &artifact.to_string_lossy());
+                    let ev = detection_event(&hits, &req, &shown);
                     if sink.blocking_send(ev).is_err() {
                         break; // printer gone
                     }
@@ -177,6 +242,7 @@ fn worker_loop(
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 // Process/file vanished before we could read it, expected race.
+                tracing::debug!(artifact = %artifact.display(), "artifact gone before it was read");
                 stats.gone.fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
@@ -184,6 +250,41 @@ fn worker_loop(
             }
         }
     }
+}
+
+/// A live process per container, to reach a gone process's files.
+type Siblings = std::sync::Mutex<HashMap<String, u32>>;
+
+/// `req.path` (absolute) through the root of a live process of its container.
+fn sibling_path(req: &ScanRequest, siblings: &Siblings) -> Option<PathBuf> {
+    let id = req.container_id.as_deref()?;
+    sibling_path_by(req, siblings, |pid| {
+        k3sec_core::container_id_of_pid(pid).as_deref() == Some(id)
+    })
+}
+
+/// [`sibling_path`], `alive(pid)` saying a pid is a live process of the container.
+fn sibling_path_by(
+    req: &ScanRequest,
+    siblings: &Siblings,
+    alive: impl Fn(u32) -> bool,
+) -> Option<PathBuf> {
+    let path = req.path.as_deref().filter(|p| p.starts_with('/'))?;
+    let id = req.container_id.as_deref()?;
+    let mut known = siblings.lock().unwrap_or_else(|e| e.into_inner());
+    let pid = match known.get(id).copied().filter(|&p| alive(p)) {
+        Some(pid) => pid,
+        None => {
+            let pid = std::fs::read_dir("/proc")
+                .ok()?
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                .find(|&p| alive(p))?;
+            known.insert(id.to_string(), pid);
+            pid
+        }
+    };
+    Some(PathBuf::from(format!("/proc/{pid}/root{path}")))
 }
 
 /// Host-visible path of the artifact to scan, inside the container's mount ns.
@@ -228,6 +329,7 @@ fn debounce_key(req: &ScanRequest) -> String {
 
 fn report_stats(stats: &ScanStats) {
     tracing::info!(
+        cached = stats.cached.load(Ordering::Relaxed),
         scanned = stats.scanned.load(Ordering::Relaxed),
         hits = stats.hits.load(Ordering::Relaxed),
         clean = stats.clean.load(Ordering::Relaxed),
@@ -248,9 +350,28 @@ mod tests {
             trigger,
             pid,
             path: path.map(String::from),
+            container_id: None,
             container: None,
             comm: "x".into(),
         }
+    }
+
+    #[test]
+    fn a_gone_process_is_read_through_a_live_one_of_its_container() {
+        // This test process stands for the container's live process.
+        let me = std::process::id();
+        let mut r = req(ScanTrigger::Exec, u32::MAX, Some("/bin/sh"));
+        r.container_id = Some("c1".into());
+        let siblings = Siblings::default();
+        let path = sibling_path_by(&r, &siblings, |p| p == me).expect("a live process");
+        assert_eq!(path, PathBuf::from(format!("/proc/{me}/root/bin/sh")));
+        assert_eq!(siblings.lock().unwrap().get("c1"), Some(&me), "remembered");
+        assert!(sibling_path_by(&r, &Siblings::default(), |_| false).is_none());
+        r.path = Some("relative/bin".into());
+        assert!(
+            sibling_path_by(&r, &siblings, |p| p == me).is_none(),
+            "relative: no guess"
+        );
     }
 
     #[test]
@@ -263,6 +384,21 @@ mod tests {
     fn file_write_artifact_is_under_proc_root() {
         let p = artifact_path(&req(ScanTrigger::FileWrite, 42, Some("/etc/passwd"))).unwrap();
         assert_eq!(p, PathBuf::from("/proc/42/root/etc/passwd"));
+    }
+
+    #[test]
+    fn a_changed_file_is_not_the_cached_one() {
+        let p = std::env::temp_dir().join(format!("k3sec-clean-{}", std::process::id()));
+        std::fs::write(&p, b"clean").unwrap();
+        let cache = CleanFiles::default();
+        let before = CleanFiles::key(&std::fs::metadata(&p).unwrap());
+        cache.insert(before);
+        assert!(cache.contains(&CleanFiles::key(&std::fs::metadata(&p).unwrap())));
+        std::fs::write(&p, b"now with a payload").unwrap();
+        let after = CleanFiles::key(&std::fs::metadata(&p).unwrap());
+        assert_ne!(before, after);
+        assert!(!cache.contains(&after), "rewritten: scanned again");
+        std::fs::remove_file(&p).unwrap();
     }
 
     #[test]
