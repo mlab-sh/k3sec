@@ -191,7 +191,8 @@ impl Finding {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ImageVulns {
     pub findings: Vec<Finding>,
-    /// Packages whose ecosystem can't be matched (unsupported distro, ...).
+    /// Packages that cannot be matched: unsupported ecosystem, or no exact
+    /// version (a wildcard match would claim every CVE of the product).
     pub unmatched: usize,
     /// Packages the source could not scan this time (not clean!).
     pub unscanned: usize,
@@ -231,7 +232,7 @@ pub async fn match_images(
     let mut seen = HashSet::new();
     for &i in &todo {
         for p in &images[i].packages {
-            if let Some(c) = p.coordinate.as_ref().filter(|c| seen.insert((*c).clone())) {
+            if let Some(c) = matchable(p).filter(|c| seen.insert((*c).clone())) {
                 coords.push(c.clone());
             }
         }
@@ -260,7 +261,7 @@ pub async fn match_images(
         let mut by_purl = HashMap::new();
         let mut unscanned = 0;
         for p in &images[i].packages {
-            let Some(coord) = &p.coordinate else { continue };
+            let Some(coord) = matchable(p) else { continue };
             match by_coord.get(coord) {
                 Some(Some(advs)) => {
                     by_purl.insert(p.purl.clone(), findings_for(p, coord, advs));
@@ -397,12 +398,17 @@ fn apply_enrichment(f: &mut Finding, info: Option<&CveInfo>) {
     }
 }
 
+/// The coordinate to match a package on: none without an exact version.
+fn matchable(p: &crate::model::Package) -> Option<&Coordinate> {
+    p.coordinate.as_ref().filter(|c| c.is_exact())
+}
+
 /// Attach the image's current reachability to its cached/fresh findings.
 fn join(img: &ImageInventory, by_purl: &HashMap<String, Vec<Finding>>, cached: bool) -> ImageVulns {
     let mut findings = Vec::new();
     let mut unmatched = 0;
     for p in &img.packages {
-        if p.coordinate.is_none() {
+        if matchable(p).is_none() {
             unmatched += 1;
         }
         for f in by_purl.get(&p.purl).into_iter().flatten() {

@@ -65,6 +65,31 @@ impl Coordinate {
             version: version.to_string(),
         }
     }
+
+    /// Whether the coordinate names a version a CVE range can be checked
+    /// against. Otherwise the feed answers for every version of the product
+    /// (a CPE `*`): possible, not established, so the package is not matched.
+    pub fn is_exact(&self) -> bool {
+        let version = match self {
+            Coordinate::Eco { version, .. } => version.as_str(),
+            Coordinate::Purl { purl } => purl
+                .split(['?', '#'])
+                .next()
+                .and_then(|p| p.rsplit_once('@'))
+                .map_or("", |(_, v)| v),
+            Coordinate::Cpe { cpe } => cpe.split(':').nth(5).unwrap_or(""),
+        };
+        exact_version(version)
+    }
+}
+
+/// Not empty, not a wildcard (`*`, `-`, `1.x`), a range (`^1.2`, `>=2`) or a
+/// tag (`latest`, `(devel)`).
+fn exact_version(v: &str) -> bool {
+    let v = v.strip_prefix('v').unwrap_or(v);
+    v.starts_with(|c: char| c.is_ascii_digit())
+        && !v.contains(['*', '<', '>', '|', ' ', ','])
+        && !v.split(['.', '-']).any(|s| s.eq_ignore_ascii_case("x"))
 }
 
 /// One installed package or dependency.
@@ -135,5 +160,47 @@ impl ImageInventory {
 
     pub fn count(&self, r: Reachability) -> usize {
         self.packages.iter().filter(|p| p.reachability == r).count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_coordinates_only() {
+        let eco = |v: &str| Coordinate::eco("npm", "lodash", v).is_exact();
+        for v in [
+            "4.17.20",
+            "v1.9.1",
+            "1:9.2p1-2",
+            "3.0.11-1~deb12u2",
+            "1.36.1-r15",
+            "v0.0.0-20231010-abcdef",
+        ] {
+            assert!(eco(v), "{v}");
+        }
+        for v in [
+            "",
+            "*",
+            "latest",
+            "(devel)",
+            "1.x",
+            "2.X.3",
+            "^1.2.0",
+            "~1.2",
+            ">=2.0",
+            "1.0 || 2.0",
+        ] {
+            assert!(!eco(v), "{v}");
+        }
+        let cpe = |c: &str| Coordinate::Cpe { cpe: c.into() }.is_exact();
+        assert!(cpe("cpe:2.3:o:linux:linux_kernel:6.8.0:*:*:*:*:*:*:*"));
+        assert!(!cpe("cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*"));
+        assert!(!cpe("cpe:2.3:a:openbsd:openssh:-:*:*:*:*:*:*:*"));
+        let purl = |p: &str| Coordinate::Purl { purl: p.into() }.is_exact();
+        assert!(purl("pkg:npm/%40babel/core@7.24.0?foo=bar"));
+        assert!(!purl("pkg:npm/lodash"));
+        assert!(!purl("pkg:golang/example.com/app@(devel)"));
     }
 }
