@@ -27,32 +27,40 @@ pub fn container_id_of_pid(pid: u32) -> Option<String> {
 
 /// The container id of a cgroup v2 id (`bpf_get_current_cgroup_id`), for a
 /// process gone before its `/proc/<pid>/cgroup` was read (a short `exec`).
-/// The id is the inode of the cgroup's directory: on a miss, the host's tree is
-/// walked again, at most once a second. Through `/proc/1/root`, which is the
+/// The id is the inode of the cgroup's directory. An id not seen yet walks the
+/// host's tree again at once (a few ms): a container seconds old is there now
+/// and may be gone in a second. An id still unknown after a walk is no
+/// container and is not walked for again. Through `/proc/1/root`, which is the
 /// host's root in a `hostPID` pod too (its own `/sys/fs/cgroup` is only its
 /// cgroup namespace).
 #[cfg(target_os = "linux")]
 pub fn container_id_of_cgroup(cgroup_id: u64) -> Option<String> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
 
-    static INDEX: Mutex<Option<(HashMap<u64, String>, Instant)>> = Mutex::new(None);
-    let mut index = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((map, at)) = index.as_ref() {
-        if let Some(id) = map.get(&cgroup_id) {
-            return Some(id.clone());
-        }
-        if at.elapsed() < Duration::from_secs(1) {
-            return None;
-        }
+    /// Inode → container id, and the inodes no walk found.
+    type Index = (HashMap<u64, String>, HashSet<u64>);
+    static INDEX: Mutex<Option<Index>> = Mutex::new(None);
+    let mut guard = INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (map, misses) = guard.get_or_insert_with(Default::default);
+    if let Some(id) = map.get(&cgroup_id) {
+        return Some(id.clone());
+    }
+    if misses.contains(&cgroup_id) {
+        return None;
     }
     let root = ["/proc/1/root/sys/fs/cgroup", "/sys/fs/cgroup"]
         .into_iter()
         .find(|r| std::fs::read_dir(r).is_ok())?;
-    let map = cgroup_index(std::path::Path::new(root));
+    *map = cgroup_index(std::path::Path::new(root));
     let found = map.get(&cgroup_id).cloned();
-    *index = Some((map, Instant::now()));
+    if found.is_none() {
+        // shortcut: wholesale reset instead of expiry, bounded by the node's cgroups
+        if misses.len() >= 4096 {
+            misses.clear();
+        }
+        misses.insert(cgroup_id);
+    }
     found
 }
 
