@@ -134,6 +134,12 @@ by `configure` with the compiler's message, and the previous rules stay.
 
 ## Inventory
 
+In this mode the whole node is inventoried (the pods running when the tool
+starts included, within the configured namespaces), in the background, two
+images at a time; each image sends `inventory_ready` when done. `inventory`
+answers what is done so far, plus the node stack (`node/<name>`: k3s,
+containerd, kernel) and drops images whose containers are all gone.
+
 `inventory` uploads one CBOR `Inventory` (`format: "k3sec-inventory"`):
 
 ```
@@ -151,6 +157,27 @@ way k3sec does it (distro packages by source package and version); `None`
 means not matchable (unsupported distro). mlab matches there and joins the
 findings with `reachability`. `cluster_id` is the UID of the `kube-system`
 namespace.
+
+## Running it
+
+The agent starts `<path> serve` with an empty environment (`PATH` aside),
+its working directory as `work_dir`, stdin/stdout as the protocol channel and
+stderr to its log. So, in this mode:
+
+- the Kubernetes API comes from `settings.kubeconfig`, else the pod's service
+  account through `kubernetes.default.svc` (no `KUBERNETES_SERVICE_*`
+  variables needed);
+- the node is `settings.node`, else `$NODE_NAME`, else read from the tool's
+  own pod (`spec.nodeName`); without any, `init` fails;
+- `cluster_id` needs `get` on namespaces, node versions `get` on nodes;
+- inventory and eBPF need the privileges described in the wiki's Deployment
+  page (root, host PID namespace, `CAP_BPF` + `CAP_PERFMON`).
+
+The local protocol (u32 big-endian length + CBOR, tagged by `t`) is
+implemented in `crates/k3sec-agent/src/protocol.rs` from mlab-agent's
+`docs/tool-protocol.md` v1, not through `mlab-agent-tool-sdk`: k3sec is
+public, the SDK is not. It was checked against the SDK's own types with a
+harness driving `k3sec serve` (init, every op, events, shutdown).
 
 ## Status
 

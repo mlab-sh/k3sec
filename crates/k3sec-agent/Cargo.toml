@@ -1,0 +1,33 @@
+[package]
+name = "k3sec-agent"
+description = "k3sec as an mlab-agent tool (`k3sec serve`): tool protocol, batching, config from the workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+k3sec-api.workspace = true
+k3sec-core.workspace = true
+k3sec-engine.workspace = true
+k3sec-inventory.workspace = true
+k3sec-k8s.workspace = true
+k3sec-probe.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+ciborium = "0.2"
+clap.workspace = true
+futures.workspace = true
+kube.workspace = true
+serde.workspace = true
+serde_bytes = "0.11"
+serde_json.workspace = true
+sha2 = "0.10"
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

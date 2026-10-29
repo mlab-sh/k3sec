@@ -40,6 +40,9 @@ pub enum Command {
     /// Inventory + match vulnerabilities via vuln.mlab.sh, loaded code first
     /// (one-shot; needs root).
     Vulns(VulnsArgs),
+    /// Run as a tool of the mlab workspace agent: started by mlab-agent,
+    /// speaks the tool protocol on stdin/stdout (not for interactive use).
+    Serve,
 }
 
 #[derive(Debug, Args)]
@@ -105,6 +108,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Watch(args) => watch(cli.kubeconfig, args).await,
         Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, args).await,
         Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, args).await,
+        Command::Serve => k3sec_agent::serve().await,
     }
 }
 

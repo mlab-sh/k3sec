@@ -6,6 +6,8 @@ every collector implements `EventSource` and feeds one printer; the engines
 
 ```text
 crates/
+  k3sec-agent/       `k3sec serve`: the mlab-agent tool (local protocol, batching, backlog,
+                     config clamped to the agent policy, exec sha256, inventory ops)
   k3sec-api/         the mlab-agent tool contract v1 (CBOR): ops, events, SecEvent wire
                      schema, inventory; standalone, imported by the mlab backend
   k3sec-core/        SecEvent, EventSource, Printer (pretty / NDJSON), cgroup → container id,

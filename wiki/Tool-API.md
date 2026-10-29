@@ -19,5 +19,6 @@ The contract is versioned and frozen: **v1**, crate `k3sec-api`, spec in
 | Config | chosen in the workspace (`configure`), bounded by `[tools.k3sec.settings]` in the agent's local policy |
 | Vulnerabilities | k3sec sends the inventory with match coordinates and reachability; matching happens in mlab |
 
-The `--sink agent` / `k3sec serve` mode and the DaemonSet with the agent are
-being built (M5); the standalone commands on the other pages are unchanged.
+`k3sec serve` is that mode: it is started by the agent, never by hand. The
+DaemonSet running the agent and k3sec side by side is being built (M5); the
+standalone commands on the other pages are unchanged.

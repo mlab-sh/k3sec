@@ -12,6 +12,7 @@ name = "k3sec"
 path = "src/main.rs"
 
 [dependencies]
+k3sec-agent.workspace = true
 k3sec-core.workspace = true
 k3sec-engine.workspace = true
 k3sec-inventory.workspace = true
