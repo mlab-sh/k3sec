@@ -1,0 +1,151 @@
+# k3sec with mlab-agent, one pod per node.
+#
+# The agent holds the workspace identity and the only outbound connection
+# (to mlab's relay); it starts `k3sec serve` as its tool. k3sec has no mlab
+# key and reaches nothing but the Kubernetes API.
+#
+# Before applying:
+#   kubectl create namespace k3sec
+#   kubectl -n k3sec create secret generic k3sec-enroll --from-literal=code=<enrolment code>
+# Then edit the ConfigMap (upload host, policy ceiling) and apply this file.
+# See the wiki's Deployment page.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k3sec
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k3sec
+  namespace: k3sec
+---
+# Read-only, the strict minimum k3sec uses.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k3sec
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["kube-system"] # cluster id: the UID of kube-system
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k3sec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k3sec
+subjects:
+  - kind: ServiceAccount
+    name: k3sec
+    namespace: k3sec
+---
+# The agent's local policy. The host admin owns it: mlab can only choose a
+# k3sec config within [tools.k3sec.settings]. @K3SEC_SHA256@ and @NODE_NAME@
+# are filled at start (the image's k3sec binary, this node).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k3sec-policy
+  namespace: k3sec
+data:
+  policy.toml: |
+    enabled = true
+    # The relay's upload host, as shown by mlab's policy editor.
+    upload_hosts = ["<account>.eu.r2.cloudflarestorage.com"]
+
+    [tools.k3sec]
+    path = "/usr/bin/k3sec"
+    sha256 = "@K3SEC_SHA256@"
+    enabled = true
+    # Closed list: what mlab may call (k3sec refuses anything else too).
+    allowed_ops = ["status", "configure", "events_since", "inventory", "sbom"]
+
+    [tools.k3sec.settings]
+    node = "@NODE_NAME@"
+    allow_k8s_events = true
+    allow_logs = false
+    allow_ebpf = true
+    allow_rules = true
+    allow_vulns = true
+    namespaces = []
+    rulesets = ["/usr/share/k3sec/rules"]
+    allow_remote_rules = false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: k3sec
+  namespace: k3sec
+  labels: { app.kubernetes.io/name: k3sec }
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/name: k3sec }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: k3sec }
+    spec:
+      serviceAccountName: k3sec
+      # Container processes, their /proc/<pid>/root and maps: the host's PIDs.
+      hostPID: true
+      tolerations:
+        - operator: Exists # every node, control plane included
+      containers:
+        - name: k3sec
+          image: ghcr.io/mlab-sh/k3sec:1.5.0
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: MLAB_SERVER
+              value: https://mlab.sh
+            # - name: MLAB_FINGERPRINT   # mlab key fingerprint shown with the code
+            #   value: "...."
+          securityContext:
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add:
+                - BPF # eBPF programs and maps
+                - PERFMON # tracepoints, kprobes
+                - SYS_RESOURCE # locked memory for BPF maps (older kernels)
+                - SYS_PTRACE # other processes' /proc/<pid>/root, maps, exe
+                - DAC_READ_SEARCH # files of any owner inside containers
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/mlab-agent }
+            - { name: policy, mountPath: /etc/k3sec, readOnly: true }
+            - { name: enroll, mountPath: /etc/mlab-enroll, readOnly: true }
+            - { name: tracefs, mountPath: /sys/kernel/tracing, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        # Agent keys, enrolment and k3sec's work dir: on the node, mode 0700.
+        - name: state
+          hostPath: { path: /var/lib/mlab-agent, type: DirectoryOrCreate }
+        - name: policy
+          configMap: { name: k3sec-policy }
+        - name: enroll
+          secret: { secretName: k3sec-enroll, optional: true }
+        - name: tracefs
+          hostPath: { path: /sys/kernel/tracing }
+        - name: tmp
+          emptyDir: {}

@@ -55,7 +55,14 @@ What k3sec does **not** see yet, and how it shows up.
 ## Live stream
 
 - `watch --vulns` reports pods, not the [node stack](Node-Stack).
-- The eBPF exec → loaded promotion was not exercised on the lab (no
-  `bpf-linker`); it's covered by unit tests on a fake rootfs.
-- The [DaemonSet](Deployment#as-a-daemonset) manifest is a template, not yet run
-  end to end.
+- **YARA on exec scans the executable** (`/proc/<pid>/exe`): a script is
+  scanned as its interpreter (`/bin/busybox`), not as the script's text.
+- **Nodes inside containers (k3d, kind, k3s in Docker).** The node's PID
+  namespace is not the kernel's, so the PIDs eBPF reports don't exist in the
+  node's `/proc`. Events still reach their pod (through the cgroup id), but
+  YARA on exec and the exec → loaded promotion, which read `/proc/<pid>`, see
+  nothing. On a real node (or VM), `hostPID` is the kernel's namespace and all
+  of it works.
+- **tracefs** must be mounted on the node at `/sys/kernel/tracing` (systemd
+  does it); the DaemonSet mounts it from there. Without it the `ebpf` source
+  reports `tracefs not found` and the others keep going.
