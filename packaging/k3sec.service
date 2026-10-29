@@ -1,0 +1,32 @@
+# k3sec outside Kubernetes pods: the live stream of a k3s node, as a service.
+# Not enabled by the package. With an mlab workspace, run k3sec as a tool of
+# mlab-agent instead (the agent starts `k3sec serve`; no unit needed).
+#   sudo systemctl enable --now k3sec
+# Output (NDJSON) goes to the journal: journalctl -u k3sec -o cat
+[Unit]
+Description=k3sec runtime security for this k3s node
+Documentation=https://github.com/mlab-sh/k3sec/wiki
+After=network-online.target k3s.service
+Wants=network-online.target
+ConditionPathExists=/etc/rancher/k3s/k3s.yaml
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+ExecStart=/usr/bin/k3sec --kubeconfig /etc/rancher/k3s/k3s.yaml watch --ebpf --rules /usr/share/k3sec/rules -o json
+Restart=on-failure
+RestartSec=5
+# eBPF, other processes' /proc/<pid>/root and maps: root with these only.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

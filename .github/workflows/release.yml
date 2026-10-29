@@ -1,0 +1,246 @@
+name: Release
+
+# By hand, like postmortem's: bump `[workspace.package] version` (and the
+# CHANGELOG), then run this workflow. It tags `v<version>` itself.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the packages to apt.mlab.sh / pkg.mlab.sh and push the image (off = build and keep the artifacts only)
+        type: boolean
+        default: true
+      sync_wait:
+        description: Seconds to wait between the .deb and .rpm uploads (the repository sync runs on each)
+        type: number
+        default: 180
+
+permissions:
+  contents: write
+  packages: write   # ghcr.io/mlab-sh/k3sec
+  id-token: write   # cosign keyless signature (GitHub OIDC)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+  version:
+    name: Resolve version
+    needs: test
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version from [workspace.package]
+        id: v
+        run: |
+          V=$(awk -F '"' '/^\[workspace.package\]/{w=1} w && /^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          test -n "$V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $V"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 on purpose (as postmortem): the glibc floor is the build
+          # host's, and 22.04 (2.35) still runs on Debian 12 and Ubuntu 22.04.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, deb: amd64, oci: amd64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, deb: arm64, oci: arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      # C code built for the target: SQLite (rpmdb), ring.
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The eBPF probe: k3sec-probe's build.rs compiles crates/k3sec-probe-ebpf
+      # for the BPF target with aya-build, which needs nightly + rust-src and
+      # bpf-linker. aya-build passes the userland target's arch to the BPF
+      # program (kprobe registers differ), so each target embeds its own object.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Cross-compilation tools (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      # The prebuilt static binary: `cargo install bpf-linker` needs a system
+      # LLVM of the exact major it was released for (23 for 0.12).
+      - name: bpf-linker
+        run: |
+          curl -fsSL https://github.com/aya-rs/bpf-linker/releases/download/v0.12.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst \
+            | tar --zstd -x -C ~/.cargo/bin
+          bpf-linker --version
+
+      - name: Build (eBPF probe + rpm support)
+        run: cargo +stable build --release --locked -p k3sec --features ebpf,rpm --target ${{ matrix.target }}
+
+      # The probe must be in the binary, built for this arch. aya-build leaves
+      # the object it embedded in the build-script OUT_DIR: it must be a BPF
+      # ELF, and its bytes must be inside the k3sec binary.
+      - name: Check the embedded BPF object
+        run: |
+          OBJ=$(ls target/${{ matrix.target }}/release/build/k3sec-probe-*/out/k3sec-bpf | head -1)
+          file "$OBJ" | tee /dev/stderr | grep -q 'eBPF'
+          python3 - "$OBJ" "target/${{ matrix.target }}/release/k3sec" <<'PY'
+          import sys
+          obj, binary = (open(p, 'rb').read() for p in sys.argv[1:3])
+          assert obj in binary, "BPF object not embedded in the binary"
+          for prog in (b"k3sec_execve", b"k3sec_openat", b"k3sec_tcp_v4_connect", b"k3sec_tcp_v6_connect"):
+              assert prog in obj, prog
+          print(f"embedded BPF object: {len(obj)} bytes")
+          PY
+          sha256sum "$OBJ" | tee "bpf-${{ matrix.deb }}.sha256"
+
+      - name: Package archive
+        id: pkg
+        run: |
+          NAME="k3sec-${VERSION}-${{ matrix.target }}"
+          STAGE="$(mktemp -d)/${NAME}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/k3sec" LICENSE README.md "$STAGE/"
+          cp -r rules "$STAGE/rules"
+          cp deploy/kubernetes/k3sec.yaml packaging/k3sec.service "$STAGE/"
+          tar -czf "${NAME}.tar.gz" -C "$(dirname "$STAGE")" "$NAME"
+          cp "target/${{ matrix.target }}/release/k3sec" "k3sec-linux-${{ matrix.oci }}"
+          echo "file=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # --no-strip: the release profile strips already, and the host strip
+      # fails on the aarch64 binary.
+      - name: Build .deb and .rpm
+        id: pkgs
+        run: |
+          cargo +stable install cargo-deb cargo-generate-rpm --locked
+          DEB="k3sec_${VERSION}_${{ matrix.deb }}.deb"
+          cargo deb -p k3sec --no-build --no-strip --target ${{ matrix.target }} --deb-version "$VERSION" -o "$DEB"
+          mkdir -p rpm-out
+          cargo generate-rpm -p crates/k3sec --target ${{ matrix.target }} -s "version = \"$VERSION\"" -o rpm-out/
+          echo "deb=$DEB" >> "$GITHUB_OUTPUT"
+          echo "rpm=$(ls rpm-out/*.rpm)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k3sec-${{ matrix.deb }}
+          path: |
+            ${{ steps.pkg.outputs.file }}
+            k3sec-linux-${{ matrix.oci }}
+            bpf-${{ matrix.deb }}.sha256
+            ${{ steps.pkgs.outputs.deb }}
+            ${{ steps.pkgs.outputs.rpm }}
+
+  release:
+    name: Publish
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          ls -la dist
+          # The two arches embed different BPF objects (registers differ).
+          cat dist/bpf-*.sha256
+
+      # postmortem publishes no checksums; k3sec adds them, signed keyless
+      # (Sigstore, this workflow's GitHub identity): no key to keep.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum k3sec-*.tar.gz k3sec_*.deb k3sec-*.rpm > SHA256SUMS
+          cat SHA256SUMS
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the checksums
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
+          generate_release_notes: true
+          files: |
+            dist/k3sec-*.tar.gz
+            dist/k3sec_*.deb
+            dist/k3sec-*.rpm
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sigstore.json
+
+      # ---- apt + rpm repositories (apt.mlab.sh / pkg.mlab.sh) -------------
+      # Same bucket and layout as every mlab tool: mlab-sh/apt's sync workflow
+      # signs and indexes. Pool objects are immutable: never re-publish a
+      # version (guard from mlab-agent's workflow).
+      - name: Upload packages to the repositories
+        if: inputs.publish
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: apt-mlab-sh
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then echo "::warning::R2 secrets not set: packages not published"; exit 0; fi
+          if aws s3api head-object --bucket "$BUCKET" --key "pool/main/k/k3sec/k3sec_${VERSION}_amd64.deb" --endpoint-url "$ENDPOINT" >/dev/null 2>&1; then
+            echo "::error::k3sec ${VERSION} is already in the pool: bump the version"; exit 1
+          fi
+          aws s3 cp dist/ "s3://$BUCKET/pool/main/k/k3sec/" --recursive --exclude '*' --include '*.deb' \
+            --endpoint-url "$ENDPOINT" --cache-control "public, max-age=31536000, immutable"
+          sleep ${{ inputs.sync_wait }}
+          aws s3 cp dist/ "s3://$BUCKET/rpm/incoming/" --recursive --exclude '*' --include '*.rpm' --endpoint-url "$ENDPOINT"
+
+      # ---- DaemonSet image (deploy/Dockerfile, k3sec from the binaries above) --
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # amd64 only while mlab-agent's packages are: add linux/arm64 once
+      # apt.mlab.sh carries mlab-agent for arm64 (the k3sec binary is built).
+      - name: Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: K3SEC_FROM=dist
+          platforms: linux/amd64
+          push: ${{ inputs.publish }}
+          tags: |
+            ghcr.io/mlab-sh/k3sec:${{ env.VERSION }}
+            ghcr.io/mlab-sh/k3sec:latest

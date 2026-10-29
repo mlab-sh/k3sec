@@ -11,6 +11,51 @@ rust-version.workspace = true
 name = "k3sec"
 path = "src/main.rs"
 
+# Debian package for apt.mlab.sh (release workflow). Paths are relative to
+# this crate; `target/release/` is mapped to `target/<triple>/release/`.
+[package.metadata.deb]
+maintainer = "mlab <hello@mlab.sh>"
+copyright = "mlab"
+license-file = ["../../LICENSE", "0"]
+section = "admin"
+priority = "optional"
+extended-description = """\
+k3sec streams what happens on a k3s node (Kubernetes events, eBPF exec, connect \
+and file writes, YARA detections) and tells which vulnerabilities touch code that \
+is actually loaded in memory. Standalone CLI, or a tool of mlab-agent for an \
+mlab.sh workspace. The k3sec.service unit is installed but not enabled."""
+depends = "$auto"
+recommends = "mlab-agent"
+assets = [
+    ["target/release/k3sec", "usr/bin/", "755"],
+    ["../../rules/*", "usr/share/k3sec/rules/", "644"],
+    ["../../packaging/k3sec.service", "usr/lib/systemd/system/k3sec.service", "644"],
+    ["../../deploy/kubernetes/k3sec.yaml", "usr/share/doc/k3sec/k3sec.yaml", "644"],
+    ["../../README.md", "usr/share/doc/k3sec/README.md", "644"],
+]
+
+# RPM for pkg.mlab.sh/rpm. auto-req is off (ldd on the aarch64 cross build);
+# glibc >= 2.35 is the floor of the ubuntu-22.04 build hosts.
+[package.metadata.generate-rpm]
+summary = "Runtime security for k3s nodes: live events, eBPF, YARA, loaded vulnerabilities"
+license = "Apache-2.0"
+url = "https://github.com/mlab-sh/k3sec"
+assets = [
+    { source = "target/release/k3sec", dest = "/usr/bin/k3sec", mode = "755" },
+    { source = "../../rules/k3sec_test_marker.yar", dest = "/usr/share/k3sec/rules/k3sec_test_marker.yar", mode = "644" },
+    { source = "../../rules/meterpreter.yar", dest = "/usr/share/k3sec/rules/meterpreter.yar", mode = "644" },
+    { source = "../../rules/packed_elf_dropper.yar", dest = "/usr/share/k3sec/rules/packed_elf_dropper.yar", mode = "644" },
+    { source = "../../rules/reverse_shell.yar", dest = "/usr/share/k3sec/rules/reverse_shell.yar", mode = "644" },
+    { source = "../../packaging/k3sec.service", dest = "/usr/lib/systemd/system/k3sec.service", mode = "644" },
+    { source = "../../deploy/kubernetes/k3sec.yaml", dest = "/usr/share/doc/k3sec/k3sec.yaml", mode = "644", doc = true },
+    { source = "../../README.md", dest = "/usr/share/doc/k3sec/README.md", mode = "644", doc = true },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/k3sec/LICENSE", mode = "644" },
+]
+auto-req = "no"
+
+[package.metadata.generate-rpm.requires]
+glibc = ">= 2.35"
+
 [dependencies]
 k3sec-agent.workspace = true
 k3sec-core.workspace = true
