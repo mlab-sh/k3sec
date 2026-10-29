@@ -90,7 +90,7 @@ spec:
       hostPID: true                      # /proc of the host: container PIDs and roots
       containers:
         - name: k3sec
-          image: <your-registry>/k3sec:0.2.0
+          image: <your-registry>/k3sec:1.4.0
           args: ["watch", "--vulns", "-o", "json"]   # add --ebpf --rules /rules with an ebpf build
           env:
             - name: NODE_NAME

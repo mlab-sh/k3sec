@@ -2012,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-core"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-engine"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-inventory"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-k8s"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "k3sec-probe"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2118,11 +2118,11 @@ dependencies = [
 
 [[package]]
 name = "k3sec-probe-common"
-version = "0.2.0"
+version = "1.4.0"
 
 [[package]]
 name = "k3sec-probe-ebpf"
-version = "0.2.0"
+version = "1.4.0"
 dependencies = [
  "aya-ebpf",
  "k3sec-probe-common",
