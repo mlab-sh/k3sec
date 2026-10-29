@@ -33,6 +33,9 @@ any downstream consumer speak the same format.
 > shows what happens *after* you start watching. Use `--rollback` to replay the
 > existing backlog first.
 
+Full documentation, with real outputs from a test cluster: the
+[wiki](https://github.com/mlab-sh/k3sec/wiki) (sources in [`wiki/`](wiki/)).
+
 ## Status
 
 - **M1:** live k8s events & pod logs, pretty/JSON output. ✅
