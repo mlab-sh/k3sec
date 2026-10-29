@@ -45,6 +45,11 @@ pub fn scan_image(
     pids_by_container: &HashMap<String, Vec<u32>>,
     limits: &LangLimits,
 ) -> Option<ImageScan> {
+    // Pods of other nodes (no --node given) have no process here.
+    let containers: Vec<PodContainer> = containers
+        .into_iter()
+        .filter(|c| pids_by_container.contains_key(&c.container_id))
+        .collect();
     let pids: Vec<u32> = containers
         .iter()
         .filter_map(|c| pids_by_container.get(&c.container_id))

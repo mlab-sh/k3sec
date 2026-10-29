@@ -134,6 +134,12 @@ pub trait VulnSource: Send + Sync {
 
     /// CVSS / KEV for one CVE; `Ok(None)` when the CVE is unknown.
     async fn cve(&self, id: &str) -> Result<Option<CveInfo>>;
+
+    /// The whole known-exploited catalogue at once, by CVE id, so KEV status
+    /// doesn't need one request per CVE. `Ok(None)`: not supported.
+    async fn known_exploited(&self) -> Result<Option<HashMap<String, CveInfo>>> {
+        Ok(None)
+    }
 }
 
 /// One vulnerability of one package.
@@ -199,6 +205,9 @@ pub struct ImageVulns {
 const CHUNK: usize = 512;
 /// Concurrent CVE enrichment requests.
 const ENRICH_CONCURRENCY: usize = 8;
+/// CVEs enriched one by one per run. A single dormant `linux-libc-dev` drags
+/// in the ~9k CVEs Debian files against its `linux` source package.
+const ENRICH_MAX: usize = 800;
 
 /// Match every image's packages, from the cache when fresh. Coordinates are
 /// deduplicated across images so shared base layers are asked about once.
@@ -261,17 +270,48 @@ pub async fn match_images(
         }
         per_image.push((i, by_purl, unscanned));
     }
-    let cve_ids: HashSet<String> = per_image
+    let kev = known_exploited(source, cache).await;
+    if let Some(kev) = &kev {
+        for f in per_image
+            .iter_mut()
+            .flat_map(|(_, m, _)| m.values_mut().flatten())
+        {
+            match kev.get(&f.id) {
+                Some(info) => apply_enrichment(f, Some(info)),
+                None if f.id.starts_with("CVE-") => f.kev = Some(false),
+                None => {}
+            }
+        }
+    }
+    // Per-CVE lookups for the rest (CVSS, EU KEV), loaded code first.
+    let mut wanted: Vec<(bool, String)> = per_image
         .iter()
         .flat_map(|(_, m, _)| m.values().flatten())
-        .filter(|f| f.id.starts_with("CVE-") && f.kev.is_none())
-        .map(|f| f.id.clone())
+        .filter(|f| f.id.starts_with("CVE-") && f.cvss.is_none())
+        .map(|f| (f.reachability != Reachability::Loaded, f.id.clone()))
         .collect();
-    let info = enrich(source, cve_ids).await;
+    wanted.sort();
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for (_, id) in wanted {
+        if seen_ids.insert(id.clone()) {
+            ids.push(id);
+        }
+    }
+    if ids.len() > ENRICH_MAX {
+        tracing::info!(
+            skipped = ids.len() - ENRICH_MAX,
+            "CVE enrichment capped: the rest keep their advisory severity"
+        );
+        ids.truncate(ENRICH_MAX);
+    }
+    let info = enrich(source, ids).await;
 
     for (i, mut by_purl, unscanned) in per_image {
         for f in by_purl.values_mut().flatten() {
-            apply_enrichment(f, info.get(&f.id));
+            if let Some(Some(i)) = info.get(&f.id) {
+                apply_enrichment(f, Some(i));
+            }
         }
         if let (Some(d), 0) = (&images[i].digest, unscanned) {
             cache.put(source.id(), d, &by_purl);
@@ -296,8 +336,29 @@ async fn scan_all(
     Ok(all)
 }
 
+/// The KEV catalogue, from the cache or the source; `None` if unavailable.
+async fn known_exploited(
+    source: &dyn VulnSource,
+    cache: &Cache,
+) -> Option<HashMap<String, CveInfo>> {
+    if let Some(kev) = cache.get_json("kev", source.id()) {
+        return Some(kev);
+    }
+    match source.known_exploited().await {
+        Ok(Some(kev)) => {
+            cache.put_json("kev", source.id(), &kev);
+            Some(kev)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("KEV catalogue unavailable, checking CVEs one by one: {e:#}");
+            None
+        }
+    }
+}
+
 /// `None` entries = enrichment failed for that CVE (KEV unknown).
-async fn enrich(source: &dyn VulnSource, ids: HashSet<String>) -> HashMap<String, Option<CveInfo>> {
+async fn enrich(source: &dyn VulnSource, ids: Vec<String>) -> HashMap<String, Option<CveInfo>> {
     if !ids.is_empty() {
         tracing::info!(cves = ids.len(), "enriching CVEs (CVSS, KEV)");
     }
@@ -317,8 +378,8 @@ async fn enrich(source: &dyn VulnSource, ids: HashSet<String>) -> HashMap<String
         .await
 }
 
-fn apply_enrichment(f: &mut Finding, info: Option<&Option<CveInfo>>) {
-    let Some(Some(info)) = info else { return };
+fn apply_enrichment(f: &mut Finding, info: Option<&CveInfo>) {
+    let Some(info) = info else { return };
     f.kev = Some(info.in_kev || info.in_eu_kev);
     if let Some(score) = info.cvss_score {
         f.cvss = Some(score);
@@ -363,7 +424,6 @@ pub fn findings_for(
     };
     let mut by_id: BTreeMap<String, Finding> = BTreeMap::new();
     for adv in advisories {
-        let id = cve_of(adv).unwrap_or_else(|| adv.id.clone());
         let label = adv
             .database_specific
             .as_ref()
@@ -372,27 +432,30 @@ pub fn findings_for(
             .map(VulnSeverity::from_label)
             .unwrap_or(VulnSeverity::Unknown);
         let fixed = fixed_version(adv, coord, installed);
-        let f = by_id.entry(id.clone()).or_insert_with(|| Finding {
-            // KEV only lists CVEs: a CVE-less advisory is known not to be in it.
-            kev: (!id.starts_with("CVE-")).then_some(false),
-            id,
-            advisories: Vec::new(),
-            package: pkg.name.clone(),
-            version: pkg.version.clone(),
-            purl: pkg.purl.clone(),
-            severity: VulnSeverity::Unknown,
-            cvss: None,
-            fixed: None,
-            summary: String::new(),
-            reachability: pkg.reachability,
-        });
-        f.advisories.push(adv.id.clone());
-        f.severity = f.severity.max(label);
-        if f.fixed.is_none() {
-            f.fixed = fixed;
-        }
-        if f.summary.is_empty() {
-            f.summary = adv.summary.clone();
+        // A distro errata (RLSA-…) can fix several CVEs: one finding each.
+        for id in cves_of(adv) {
+            let f = by_id.entry(id.clone()).or_insert_with(|| Finding {
+                // KEV only lists CVEs: a CVE-less advisory is known not to be in it.
+                kev: (!id.starts_with("CVE-")).then_some(false),
+                id,
+                advisories: Vec::new(),
+                package: pkg.name.clone(),
+                version: pkg.version.clone(),
+                purl: pkg.purl.clone(),
+                severity: VulnSeverity::Unknown,
+                cvss: None,
+                fixed: None,
+                summary: String::new(),
+                reachability: pkg.reachability,
+            });
+            f.advisories.push(adv.id.clone());
+            f.severity = f.severity.max(label);
+            if f.fixed.is_none() {
+                f.fixed = fixed.clone();
+            }
+            if f.summary.is_empty() {
+                f.summary = adv.summary.clone();
+            }
         }
     }
     // Kernel CPE matches run in the thousands: don't enrich them one by one.
@@ -404,18 +467,28 @@ pub fn findings_for(
     by_id.into_values().collect()
 }
 
-/// The CVE an advisory is about: `aliases`, `upstream`, or an id such as
-/// `DEBIAN-CVE-2024-1234` / `ALPINE-CVE-…`.
-fn cve_of(adv: &Advisory) -> Option<String> {
-    if adv.id.starts_with("CVE-") {
-        return Some(adv.id.clone());
+/// The CVEs an advisory is about: its id (`CVE-…`, `DEBIAN-CVE-…`),
+/// `aliases` and `upstream`; the advisory id itself when it names none.
+fn cves_of(adv: &Advisory) -> Vec<String> {
+    let mut ids: Vec<String> = adv
+        .id
+        .find("CVE-")
+        .map(|i| adv.id[i..].to_string())
+        .into_iter()
+        .chain(
+            adv.aliases
+                .iter()
+                .chain(&adv.upstream)
+                .filter(|a| a.starts_with("CVE-"))
+                .cloned(),
+        )
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        ids.push(adv.id.clone());
     }
-    adv.aliases
-        .iter()
-        .chain(&adv.upstream)
-        .find(|a| a.starts_with("CVE-"))
-        .cloned()
-        .or_else(|| adv.id.find("CVE-").map(|i| adv.id[i..].to_string()))
+    ids
 }
 
 /// The smallest `fixed` of a range containing `installed`, for this package
@@ -537,9 +610,13 @@ mod tests {
                 "database_specific": {"severity": "MODERATE"}
             })),
             adv(serde_json::json!({"id": "GHSA-only", "database_specific": {"severity": "HIGH"}})),
+            adv(serde_json::json!({"id": "RLSA-2024:1", "aliases": ["CVE-2024-1", "CVE-2024-2"]})),
         ];
         let f = findings_for(&pkg, &coord, &advs);
-        assert_eq!(f.len(), 2);
+        assert_eq!(f.len(), 4, "an errata naming two CVEs gives two findings");
+        assert!(f
+            .iter()
+            .any(|f| f.id == "CVE-2024-2" && f.advisories == ["RLSA-2024:1"]));
         let cve = f.iter().find(|f| f.id == "CVE-2023-42363").unwrap();
         assert_eq!(cve.advisories, ["ALPINE-CVE-2023-42363", "GHSA-xxxx"]);
         assert_eq!(cve.fixed.as_deref(), Some("1.36.1-r17"));
@@ -671,6 +748,49 @@ mod tests {
         assert!(again[0].cached);
         assert_eq!(src.scans.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(again[0].findings[0].reachability, Reachability::Dormant);
+    }
+
+    /// Per-CVE lookups always fail; KEV comes from the bulk catalogue.
+    struct CatalogSource;
+
+    #[async_trait::async_trait]
+    impl VulnSource for CatalogSource {
+        fn id(&self) -> &str {
+            "catalog"
+        }
+        async fn scan(&self, coords: &[Coordinate]) -> Result<Vec<Option<Vec<Advisory>>>> {
+            Ok(coords
+                .iter()
+                .map(|_| {
+                    Some(vec![
+                        adv(serde_json::json!({"id": "DEBIAN-CVE-2024-6387"})),
+                        adv(serde_json::json!({"id": "DEBIAN-CVE-2024-0001"})),
+                    ])
+                })
+                .collect())
+        }
+        async fn cve(&self, _id: &str) -> Result<Option<CveInfo>> {
+            anyhow::bail!("per-CVE endpoint down")
+        }
+        async fn known_exploited(&self) -> Result<Option<HashMap<String, CveInfo>>> {
+            let info = CveInfo {
+                cvss_score: Some(8.1),
+                in_kev: true,
+                ..Default::default()
+            };
+            Ok(Some(HashMap::from([("CVE-2024-6387".to_string(), info)])))
+        }
+    }
+
+    #[tokio::test]
+    async fn kev_from_bulk_catalogue() {
+        let cache = Cache::new(None, std::time::Duration::from_secs(60), true);
+        let res = match_images(&CatalogSource, &cache, &[image("sha256:1")]).await;
+        let by = |id: &str| res[0].findings.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(by("CVE-2024-6387").kev, Some(true));
+        assert_eq!(by("CVE-2024-6387").cvss, Some(8.1));
+        // Not in the catalogue: known not KEV, even though enrichment failed.
+        assert_eq!(by("CVE-2024-0001").kev, Some(false));
     }
 
     #[tokio::test]

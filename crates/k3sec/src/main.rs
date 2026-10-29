@@ -6,6 +6,7 @@
 //! [`k3sec_core::SecEvent`] envelope, so detection (M3) can plug in downstream.
 
 mod cli;
+mod vulns;
 
 use clap::Parser;
 

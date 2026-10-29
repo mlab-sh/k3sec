@@ -8,10 +8,15 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
+use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest, SecEvent, Source};
 use k3sec_engine::{DetectionEngine, EngineConfig};
-use k3sec_k8s::{build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver};
+use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
+use k3sec_k8s::{
+    build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver, PodNotify,
+};
 use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
+
+use crate::vulns::{InventoryArgs, MlabArgs, VulnsArgs};
 
 /// k3sec, runtime security for k3s clusters.
 #[derive(Debug, Parser)]
@@ -29,6 +34,12 @@ pub struct Cli {
 pub enum Command {
     /// Stream cluster events, pod logs, and eBPF runtime events in real time.
     Watch(WatchArgs),
+    /// Inventory the packages of every container running on this node, with
+    /// their loaded/dormant reachability (one-shot; needs root).
+    Inventory(InventoryArgs),
+    /// Inventory + match vulnerabilities via vuln.mlab.sh, loaded code first
+    /// (one-shot; needs root).
+    Vulns(VulnsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -74,6 +85,15 @@ pub struct WatchArgs {
     #[arg(long, value_name = "N")]
     pub scan_workers: Option<usize>,
 
+    /// Inventory + vulnerability-match each new pod image in the background,
+    /// emitting `source: "vuln"` events (needs root). Existing pods only with
+    /// --rollback. With --ebpf, exec'd binaries promote dormant packages.
+    #[arg(long)]
+    pub vulns: bool,
+
+    #[command(flatten)]
+    pub mlab: MlabArgs,
+
     /// Output format.
     #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::default())]
     pub output: OutputFormat,
@@ -83,6 +103,8 @@ pub struct WatchArgs {
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Watch(args) => watch(cli.kubeconfig, args).await,
+        Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, args).await,
+        Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, args).await,
     }
 }
 
@@ -115,6 +137,14 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         None
     };
 
+    // Same fail-fast for --vulns: privileges and a valid --mlab-url.
+    let vuln_client = if args.vulns {
+        check_root_access()?;
+        Some(args.mlab.client()?)
+    } else {
+        None
+    };
+
     // Establish and validate the connection up-front so kubeconfig/RBAC errors
     // are reported clearly before any long-running watch starts.
     let client = build_client(kubeconfig.as_deref()).await?;
@@ -133,14 +163,31 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
             args.namespace.clone(),
         )));
     }
-    if args.ebpf {
+    let node = args
+        .node
+        .clone()
+        .or_else(|| std::env::var("NODE_NAME").ok());
+    // --vulns learns about new containers from the resolver's pod watch.
+    let mut vuln_slot = None;
+    let notify = vuln_client.map(|client| {
+        let (ctx, crx) = mpsc::channel(256);
+        let (etx, erx) = mpsc::channel::<ExecObservation>(1024);
+        let watcher = VulnWatcher::new(
+            std::sync::Arc::new(client),
+            args.mlab.cache(),
+            LangLimits::default(),
+        );
+        vuln_slot = Some((watcher, crx, erx, etx));
+        PodNotify {
+            tx: ctx,
+            existing: args.rollback,
+        }
+    });
+    let resolver = (args.ebpf || args.vulns)
+        .then(|| NodePodResolver::spawn_with_notify(client.clone(), node, notify, cancel.clone()));
+    if let Some(resolver) = resolver.filter(|_| args.ebpf) {
         // The resolver watches pods (scoped to this node) so kernel events can
         // be tagged with pod/namespace context.
-        let node = args
-            .node
-            .clone()
-            .or_else(|| std::env::var("NODE_NAME").ok());
-        let resolver = NodePodResolver::spawn(client.clone(), node, cancel.clone());
         let config = ProbeConfig {
             kinds: KindFilter::new(args.kind.clone()),
         };
@@ -152,6 +199,7 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         logs = args.logs,
         ebpf = args.ebpf,
         rules = args.rules.is_some(),
+        vulns = args.vulns,
         rollback = args.rollback,
         output = ?args.output,
         sources = sources.len(),
@@ -163,10 +211,25 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1024);
     let printer = Printer::new(args.output);
 
+    // Exec events also feed --vulns reachability (best effort, never blocks).
+    let exec_tx = vuln_slot.as_ref().map(|(_, _, _, etx)| etx.clone());
     let printer_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
+            if let Some((etx, obs)) = exec_tx.as_ref().zip(exec_observation(&event)) {
+                let _ = etx.try_send(obs);
+            }
             printer.emit(&event);
         }
+    });
+
+    let vuln_handle = vuln_slot.map(|(watcher, crx, erx, _)| {
+        let tx = tx.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Err(e) = watcher.run(crx, erx, tx, cancel).await {
+                tracing::error!("vuln watcher failed: {e:#}");
+            }
+        })
     });
 
     // Spawn the YARA engine (if enabled): it drains scan requests and emits
@@ -210,6 +273,9 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         if let Some(handle) = engine_handle {
             let _ = handle.await;
         }
+        if let Some(handle) = vuln_handle {
+            let _ = handle.await;
+        }
         // Remaining sender clones are now dropped; the printer drains and returns.
         let _ = printer_handle.await;
     };
@@ -221,4 +287,16 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// An eBPF exec event as a reachability observation for `--vulns`.
+fn exec_observation(ev: &SecEvent) -> Option<ExecObservation> {
+    if ev.source != Source::Ebpf || ev.kind != "exec" {
+        return None;
+    }
+    Some(ExecObservation {
+        container_id: ev.payload["container_id"].as_str()?.to_string(),
+        pid: ev.payload["pid"].as_u64()? as u32,
+        path: ev.payload["path"].as_str()?.to_string(),
+    })
 }

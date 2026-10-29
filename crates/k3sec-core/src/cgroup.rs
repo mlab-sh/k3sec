@@ -14,7 +14,7 @@
 /// process, not in a container).
 pub fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
     cgroup
-        .split(['/', '-', '.', '_', ':'])
+        .split(['/', '-', '.', '_', ':', '\n'])
         .rfind(|seg| seg.len() == 64 && seg.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(|seg| seg.to_ascii_lowercase())
 }
@@ -49,7 +49,9 @@ mod tests {
     #[test]
     fn nested_runtime_picks_innermost_id() {
         let outer = "a".repeat(64);
-        let path = format!("0::/system.slice/docker-{outer}.scope/kubepods/besteffort/podx/{CID}");
+        // As read from /proc/<pid>/cgroup: newline-terminated.
+        let path =
+            format!("0::/system.slice/docker-{outer}.scope/kubepods/besteffort/podx/{CID}\n");
         assert_eq!(container_id_from_cgroup(&path).as_deref(), Some(CID));
     }
 

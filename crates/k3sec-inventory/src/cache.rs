@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::vuln::Finding;
@@ -19,10 +20,10 @@ pub struct Cache {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Entry {
+struct Entry<T> {
     source: String,
     fetched_at: i64,
-    findings: HashMap<String, Vec<Finding>>,
+    data: T,
 }
 
 impl Cache {
@@ -41,38 +42,49 @@ impl Cache {
             .map(|d| d.join("k3sec"))
     }
 
-    fn path(&self, digest: &str) -> Option<PathBuf> {
-        let name: String = digest
+    /// `vulns/<digest>.json`, or any other `<name>.json` (the KEV catalogue).
+    fn path(&self, name: &str) -> Option<PathBuf> {
+        let name: String = name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '/' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
-        Some(
-            self.dir
-                .as_ref()?
-                .join("vulns")
-                .join(format!("{name}.json")),
-        )
+        Some(self.dir.as_ref()?.join(format!("{name}.json")))
     }
 
     /// Findings by package purl, if a fresh entry from `source` exists.
     pub fn get(&self, source: &str, digest: &str) -> Option<HashMap<String, Vec<Finding>>> {
-        if !self.read {
-            return None;
-        }
-        let entry: Entry = serde_json::from_slice(&std::fs::read(self.path(digest)?).ok()?).ok()?;
-        let age = chrono::Utc::now().timestamp() - entry.fetched_at;
-        (entry.source == source && (0..self.ttl.as_secs() as i64).contains(&age))
-            .then_some(entry.findings)
+        self.get_json(&format!("vulns/{digest}"), source)
     }
 
     pub fn put(&self, source: &str, digest: &str, findings: &HashMap<String, Vec<Finding>>) {
-        let Some(path) = self.path(digest) else {
+        self.put_json(&format!("vulns/{digest}"), source, findings)
+    }
+
+    pub fn get_json<T: DeserializeOwned>(&self, name: &str, source: &str) -> Option<T> {
+        if !self.read {
+            return None;
+        }
+        let entry: Entry<T> =
+            serde_json::from_slice(&std::fs::read(self.path(name)?).ok()?).ok()?;
+        let age = chrono::Utc::now().timestamp() - entry.fetched_at;
+        (entry.source == source && (0..self.ttl.as_secs() as i64).contains(&age))
+            .then_some(entry.data)
+    }
+
+    pub fn put_json<T: Serialize>(&self, name: &str, source: &str, data: &T) {
+        let Some(path) = self.path(name) else {
             return;
         };
         let entry = Entry {
             source: source.to_string(),
             fetched_at: chrono::Utc::now().timestamp(),
-            findings: findings.clone(),
+            data,
         };
         let write = || -> std::io::Result<()> {
             std::fs::create_dir_all(path.parent().expect("cache path has a parent"))?;

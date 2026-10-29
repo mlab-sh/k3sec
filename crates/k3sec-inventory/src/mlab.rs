@@ -12,6 +12,7 @@
 //! Auth: `Authorization: Bearer <MLAB_API_KEY>` (optional; raises the tier's
 //! limits). The key never reaches logs or error messages.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -25,6 +26,8 @@ use crate::vuln::{Advisory, CveInfo, VulnSource};
 const MAX_ATTEMPTS: u32 = 4;
 /// 429s waited out (anonymous scans have a 10 s cooldown).
 const MAX_COOLDOWNS: u32 = 6;
+/// Safety bound on the KEV catalogue pagination (100 per page).
+const MAX_KEV_PAGES: usize = 50;
 
 /// An API key whose `Debug` never shows it.
 #[derive(Clone)]
@@ -180,6 +183,45 @@ impl VulnSource for MlabClient {
             return Ok(None);
         }
         Ok(Some(serde_json::from_value(doc).unwrap_or_default()))
+    }
+
+    /// `GET /api/v1/cve?kevOnly=1`, paginated (100 per page, ~18 pages).
+    async fn known_exploited(&self) -> Result<Option<HashMap<String, CveInfo>>> {
+        let url = format!("{}/api/v1/cve", self.base);
+        let mut out = HashMap::new();
+        for page in 0..MAX_KEV_PAGES {
+            let doc: Value = self
+                .send(|| {
+                    self.http.get(&url).query(&[
+                        ("kevOnly", "1"),
+                        ("limit", "100"),
+                        ("page", &page.to_string()),
+                    ])
+                })
+                .await?
+                .json()
+                .await
+                .context("invalid JSON from /api/v1/cve")?;
+            if let Some(e) = doc["error"].as_str() {
+                bail!("KEV listing refused: {e}");
+            }
+            let cves = doc["cves"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            for c in cves {
+                if let (Some(id), Ok(info)) = (c["id"].as_str(), serde_json::from_value(c.clone()))
+                {
+                    out.insert(id.to_string(), info);
+                }
+            }
+            let total = doc["total_results"].as_u64().unwrap_or(0) as usize;
+            if cves.is_empty() || out.len() >= total {
+                break;
+            }
+        }
+        tracing::debug!(kev = out.len(), "fetched KEV catalogue");
+        Ok(Some(out))
     }
 }
 

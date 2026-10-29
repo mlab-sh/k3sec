@@ -5,9 +5,9 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 
-use crate::rootfs::Rootfs;
+use crate::rootfs::{read_file_limited, Rootfs};
 
-use super::OsPackage;
+use super::{OsPackage, MAX_DB_SIZE};
 
 const NAME: u32 = 1000;
 const VERSION: u32 = 1001;
@@ -26,11 +26,27 @@ const TYPE_I18NSTRING: u32 = 9;
 
 pub fn read(fs: &Rootfs) -> Option<Result<Vec<OsPackage>>> {
     let path = fs.host_path("/var/lib/rpm/rpmdb.sqlite")?;
-    Some(read_db(&path))
+    Some(read_copy(&path))
+}
+
+/// SQLite canonicalizes the db path, and `/proc/<pid>/root` is a magic link
+/// to `/`: opened in place it would read the *host's* rpmdb. Read a copy.
+fn read_copy(path: &std::path::Path) -> Result<Vec<OsPackage>> {
+    let bytes = read_file_limited(path, MAX_DB_SIZE).context("cannot read rpmdb.sqlite")?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp =
+        std::env::temp_dir().join(format!("k3sec-rpmdb-{}-{nanos}.sqlite", std::process::id()));
+    std::fs::write(&tmp, bytes).context("cannot copy rpmdb.sqlite to a temp file")?;
+    let result = read_db(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 fn read_db(path: &std::path::Path) -> Result<Vec<OsPackage>> {
-    // `immutable=1`: never take locks or touch the -wal/-shm of a live container db.
+    // Read-only and immutable: no locks, no -wal/-shm side files.
     let uri = format!("file:{}?immutable=1", path.display());
     let conn = Connection::open_with_flags(
         uri,
