@@ -54,7 +54,8 @@ rest works.
 sudo NODE_NAME=$(hostname) k3sec vulns --kubeconfig /etc/rancher/k3s/k3s.yaml
 ```
 
-`/etc/rancher/k3s/k3s.yaml` is the admin kubeconfig k3s writes on server nodes.
+`/etc/rancher/k3s/k3s.yaml` is the admin kubeconfig k3s writes on server nodes
+(`/var/lib/k0s/pki/admin.conf` on k0s controllers).
 Under `sudo`, the cache lands in root's `~/.cache/k3sec`; set
 `XDG_CACHE_HOME` to choose.
 

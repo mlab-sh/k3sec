@@ -128,14 +128,21 @@ pub fn node_inventory(v: &NodeVersions, match_kernel: bool) -> ImageInventory {
         let mut p = if v.kubelet.contains("+k3s") {
             go("github.com/k3s-io/k3s", &v.kubelet)
         } else {
-            go("k8s.io/kubernetes", &v.kubelet)
+            // k0s ships upstream kubelet: `v1.33.4+k0s` is matched as `v1.33.4`.
+            go(
+                "k8s.io/kubernetes",
+                v.kubelet.split("+k0s").next().unwrap_or(&v.kubelet),
+            )
         };
         p.name = if v.kubelet.contains("+k3s") {
             "k3s"
+        } else if v.kubelet.contains("+k0s") {
+            "k0s"
         } else {
             "kubernetes"
         }
         .into();
+        p.version = v.kubelet.clone();
         packages.push(p);
     }
     if let Some(ver) = v.container_runtime.strip_prefix("containerd://") {
@@ -254,6 +261,29 @@ mod tests {
             ))
         );
         assert_eq!(by("linux").coordinate, None, "kernel matching is opt-in");
+
+        let k0s = node_inventory(
+            &NodeVersions {
+                kubelet: "v1.33.4+k0s".into(),
+                container_runtime: "containerd://1.7.27".into(),
+                ..Default::default()
+            },
+            false,
+        );
+        let by = |n: &str| k0s.packages.iter().find(|p| p.name == n).unwrap();
+        assert_eq!(by("k0s").version, "v1.33.4+k0s");
+        assert_eq!(
+            by("k0s").coordinate,
+            Some(Coordinate::eco("Go", "k8s.io/kubernetes", "v1.33.4"))
+        );
+        assert_eq!(
+            by("containerd").coordinate,
+            Some(Coordinate::eco(
+                "Go",
+                "github.com/containerd/containerd",
+                "v1.7.27"
+            ))
+        );
 
         let with_kernel = node_inventory(
             &NodeVersions {

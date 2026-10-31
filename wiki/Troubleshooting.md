@@ -28,7 +28,8 @@ error: cannot reach the Kubernetes API server (check your kubeconfig, network, a
 ```
 
 Without `--kubeconfig`: `$KUBECONFIG`, then `~/.kube/config`, then in-cluster.
-On a k3s server node the kubeconfig is `/etc/rancher/k3s/k3s.yaml`.
+On a k3s server node the kubeconfig is `/etc/rancher/k3s/k3s.yaml`; on a k0s
+controller, `/var/lib/k0s/pki/admin.conf`.
 
 ## `eBPF probe unavailable`
 
