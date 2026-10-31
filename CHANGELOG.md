@@ -5,6 +5,25 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.0]
+
+### Added
+
+- **k0s, vanilla Kubernetes and Talos**, tested on single-node labs (k0s
+  v1.33.4, kind v1.33.1, Talos v1.10.6): `inventory`, `vulns` and `watch` work
+  as on k3s. The wiki home lists the cluster compatibility.
+- **Node stack on non-k3s nodes**: a kubelet with a vendor tag (`v1.33.4+k0s`,
+  `v1.30.4-eks-a737599`, `v1.30.5-gke.1014001`) is matched as upstream
+  `k8s.io/kubernetes@v1.33.4`, not as a prerelease of it, which reported CVEs
+  already fixed. A k0s node shows as `k0s`.
+
+### Fixed
+
+- **The DaemonSet is admitted where Pod Security enforces `baseline`** (Talos,
+  RKE2, some managed clusters): `hostPID`, `hostPath` and the BPF capabilities
+  were refused and no pod was created. The `k3sec` namespace is now labelled
+  `pod-security.kubernetes.io/enforce: privileged`.
+
 ## [v1.5.2]
 
 ### Fixed

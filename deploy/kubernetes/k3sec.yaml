@@ -113,7 +113,7 @@ spec:
         - operator: Exists # every node, control plane included
       containers:
         - name: k3sec
-          image: ghcr.io/mlab-sh/k3sec:1.5.2
+          image: ghcr.io/mlab-sh/k3sec:1.6.0
           env:
             - name: NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
