@@ -28,6 +28,23 @@ docker.io/library/nginx:1.25.3 (sha256:c7a6ad68be85)  Debian GNU/Linux 12 (bookw
 > milestones. Every output in this wiki was captured on a throwaway single-node
 > k3s (v1.33.5+k3s1) built as described in [Development](Development#test-lab).
 
+## Cluster compatibility
+
+k3sec is built for k3s but nothing in it is k3s-only: it reads containers
+through the node's `/proc` and cgroups (containerd, CRI-O and Docker cgroup
+names, cgroupfs or systemd driver) and talks to the standard Kubernetes API.
+
+| Distribution | Status |
+| --- | --- |
+| **k3s** | Tested (v1.33.5+k3s1), the reference lab. |
+| **k0s** | Tested (v1.33.4+k0s): `inventory`, `vulns`, `watch`. Kubelet matched as upstream `k8s.io/kubernetes`. |
+| **Vanilla Kubernetes** (kubeadm, kind) | Tested on kind (v1.33.1): `inventory`, `vulns`, `watch`. |
+| **EKS, GKE, AKS** | Expected to work, not tested. Vendor version tags (`-eks-…`, `-gke.…`) are stripped before matching. |
+| **CRI-O / cri-dockerd nodes** | Containers and events work; the runtime itself is not in the [node stack](Node-Stack) (only containerd is matched). |
+
+The eBPF probe needs a kernel with BTF and tracefs, whatever the distribution;
+see [Known limits](Known-Limits) for nodes running inside containers.
+
 ---
 
 ## The commands

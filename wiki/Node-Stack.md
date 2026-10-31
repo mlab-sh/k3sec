@@ -7,7 +7,7 @@ image `node/<name>`, every component `loaded` (it's running).
 | Component | From | Matched as |
 |-----------|------|------------|
 | k3s | `kubeletVersion` `v1.33.5+k3s1` | Go `github.com/k3s-io/k3s@v1.33.5+k3s1` (`k8s.io/kubernetes` on non-k3s nodes) |
-| k0s | `kubeletVersion` `v1.33.4+k0s` | Go `k8s.io/kubernetes@v1.33.4` (k0s ships upstream kubelet: the `+k0s` suffix stripped) |
+| k0s, EKS, GKE, … | `kubeletVersion` `v1.33.4+k0s`, `v1.30.4-eks-a737599` | Go `k8s.io/kubernetes@v1.33.4` (upstream kubelet: the vendor tag after `+` / `-` stripped) |
 | containerd | `containerRuntimeVersion` `containerd://2.1.4-k3s1` | Go `github.com/containerd/containerd/v2@v2.1.4` (the `-k3sN` suffix stripped; `…/containerd` for 1.x) |
 | kernel | `kernelVersion` `7.0.0-38-generic` | only with `--match-kernel`: CPE `cpe:2.3:o:linux:linux_kernel:7.0.0:…` against NVD |
 

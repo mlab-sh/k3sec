@@ -128,10 +128,11 @@ pub fn node_inventory(v: &NodeVersions, match_kernel: bool) -> ImageInventory {
         let mut p = if v.kubelet.contains("+k3s") {
             go("github.com/k3s-io/k3s", &v.kubelet)
         } else {
-            // k0s ships upstream kubelet: `v1.33.4+k0s` is matched as `v1.33.4`.
+            // Upstream kubelet with a vendor tag (`+k0s`, `-eks-a737599`,
+            // `-gke.1014001`): matched as `v1.33.4`, not as a prerelease of it.
             go(
                 "k8s.io/kubernetes",
-                v.kubelet.split("+k0s").next().unwrap_or(&v.kubelet),
+                v.kubelet.split(['+', '-']).next().unwrap_or(&v.kubelet),
             )
         };
         p.name = if v.kubelet.contains("+k3s") {
@@ -283,6 +284,18 @@ mod tests {
                 "github.com/containerd/containerd",
                 "v1.7.27"
             ))
+        );
+
+        let eks = node_inventory(
+            &NodeVersions {
+                kubelet: "v1.30.4-eks-a737599".into(),
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(
+            eks.packages[0].coordinate,
+            Some(Coordinate::eco("Go", "k8s.io/kubernetes", "v1.30.4"))
         );
 
         let with_kernel = node_inventory(
