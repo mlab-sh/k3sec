@@ -39,6 +39,7 @@ names, cgroupfs or systemd driver) and talks to the standard Kubernetes API.
 | **k3s** | Tested (v1.33.5+k3s1), the reference lab. |
 | **k0s** | Tested (v1.33.4+k0s): `inventory`, `vulns`, `watch`. Kubelet matched as upstream `k8s.io/kubernetes`. |
 | **Vanilla Kubernetes** (kubeadm, kind) | Tested on kind (v1.33.1): `inventory`, `vulns`, `watch`. |
+| **Talos** | Tested (Talos v1.10.6, Kubernetes v1.33.3): `inventory`, `vulns`, DaemonSet admitted. Talos enforces Pod Security `baseline`: the manifest labels its namespace `privileged`. |
 | **EKS, GKE, AKS** | Expected to work, not tested. Vendor version tags (`-eks-…`, `-gke.…`) are stripped before matching. |
 | **CRI-O / cri-dockerd nodes** | Containers and events work; the runtime itself is not in the [node stack](Node-Stack) (only containerd is matched). |
 
