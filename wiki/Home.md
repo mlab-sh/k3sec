@@ -1,6 +1,6 @@
 # k3sec
 
-**Runtime security for k3s clusters, in one Rust binary.**
+**Runtime security for Kubernetes clusters, k3s first, in one Rust binary.**
 
 k3sec gives you one real-time stream of what happens in your cluster, normalized
 into a single event schema ([`SecEvent`](SecEvent-Schema)), and tells you which

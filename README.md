@@ -1,6 +1,7 @@
 # k3sec
 
-Runtime security CLI for **k3s** clusters, written in Rust.
+Runtime security CLI for **Kubernetes** clusters, built for **k3s** and tested
+on k0s, vanilla Kubernetes and Talos. Written in Rust.
 
 ![](./.github/banner.png)
 
@@ -33,6 +34,22 @@ docker.io/library/nginx:1.25.3 (sha256:c7a6ad68be85)  Debian GNU/Linux 12 (bookw
   LOADED        CRIT  9.8  CVE-2023-45853     zlib1g 1:1.2.13.dfsg-1
   LOADED        CRIT  9.1  CVE-2024-5535      libssl3 3.0.11-1~deb12u2  → 3.0.15-1~deb12u1
 ```
+
+## Cluster compatibility
+
+Nothing in k3sec is k3s-only: it reads containers through the node's `/proc`
+and cgroups and talks to the standard Kubernetes API.
+
+| Distribution | Status |
+|---|---|
+| k3s | Tested, the reference lab |
+| k0s | Tested: `inventory`, `vulns`, `watch` |
+| Vanilla Kubernetes (kubeadm, kind) | Tested: `inventory`, `vulns`, `watch` |
+| Talos | Tested: `inventory`, `vulns`, DaemonSet |
+| EKS, GKE, AKS | Expected to work, not tested (not on Fargate / Autopilot: no `hostPID`) |
+| CRI-O / cri-dockerd nodes | Containers and events work; the runtime itself isn't version-matched |
+
+Details on the [wiki home](https://github.com/mlab-sh/k3sec/wiki#cluster-compatibility).
 
 ## Documentation
 
@@ -124,7 +141,9 @@ kubectl apply -f k3sec.yaml
 
 The image is `ghcr.io/mlab-sh/k3sec` (k3sec, mlab-agent and the rules; amd64
 for now). Read-only RBAC, no privileged mode: `hostPID` plus
-`BPF`, `PERFMON`, `SYS_RESOURCE`, `SYS_PTRACE` and `DAC_READ_SEARCH`. The
+`BPF`, `PERFMON`, `SYS_RESOURCE`, `SYS_PTRACE` and `DAC_READ_SEARCH`, which is
+why the `k3sec` namespace is labelled Pod Security `privileged` (clusters
+enforcing `baseline`, like Talos, refuse the pod otherwise). The
 [Deployment](https://github.com/mlab-sh/k3sec/wiki/Deployment) page has the
 details; [Tool API](https://github.com/mlab-sh/k3sec/wiki/Tool-API) has the
 contract between k3sec and the agent.
@@ -156,4 +175,5 @@ cargo test -p k3sec-inventory --features rpm
 ```
 
 CI runs the same. The [Development](https://github.com/mlab-sh/k3sec/wiki/Development)
-page covers the test fixtures and a reproducible k3s test lab.
+page covers the test fixtures and a reproducible test lab (k3s in Docker; the
+same steps work with k0s, kind or Talos).

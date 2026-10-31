@@ -1,6 +1,6 @@
 [package]
 name = "k3sec"
-description = "Runtime security CLI for k3s clusters, live k8s + eBPF event streaming"
+description = "Runtime security CLI for Kubernetes (k3s, k0s, Talos, ...), live k8s + eBPF event streaming"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
