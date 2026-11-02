@@ -1,6 +1,7 @@
 //! Command-line surface and the `watch` orchestration.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -8,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use k3sec_core::docker::{self, DockerResolver};
 use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
 use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
@@ -25,6 +27,12 @@ pub struct Cli {
     /// Path to a kubeconfig file (defaults to $KUBECONFIG or ~/.kube/config).
     #[arg(long, global = true, value_name = "PATH")]
     pub kubeconfig: Option<PathBuf>,
+
+    /// A plain Docker host, no cluster: containers from the Docker daemon's
+    /// state ($DOCKER_DATA_ROOT, default /var/lib/docker). `watch` then
+    /// streams eBPF events only.
+    #[arg(long, global = true)]
+    pub docker: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -105,14 +113,21 @@ pub struct WatchArgs {
 /// Entry point invoked by `main` after CLI parsing.
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Watch(args) => watch(cli.kubeconfig, args).await,
-        Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, args).await,
-        Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, args).await,
+        Command::Watch(args) => watch(cli.kubeconfig, cli.docker, args).await,
+        Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, cli.docker, args).await,
+        Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, cli.docker, args).await,
         Command::Serve => k3sec_agent::serve().await,
     }
 }
 
-async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
+async fn watch(kubeconfig: Option<PathBuf>, docker: bool, args: WatchArgs) -> Result<()> {
+    if docker {
+        anyhow::ensure!(args.ebpf, "--docker watches eBPF events only: add --ebpf");
+        anyhow::ensure!(
+            !args.logs && !args.vulns && !args.rollback,
+            "--logs, --vulns and --rollback need a cluster, not --docker"
+        );
+    }
     if !args.kind.is_empty() && !args.ebpf {
         tracing::warn!("--kind has no effect without --ebpf; ignoring it");
     }
@@ -149,54 +164,63 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         None
     };
 
-    // Establish and validate the connection up-front so kubeconfig/RBAC errors
-    // are reported clearly before any long-running watch starts.
-    let client = build_client(kubeconfig.as_deref()).await?;
-    preflight(&client).await?;
-
-    // Assemble the active sources. The output pipeline treats them uniformly.
     let mut sources: Vec<Box<dyn EventSource>> = Vec::new();
-    sources.push(Box::new(K8sEventSource::new(
-        client.clone(),
-        args.namespace.clone(),
-        args.rollback,
-    )));
-    if args.logs {
-        sources.push(Box::new(K8sLogSource::new(
-            client.clone(),
-            args.namespace.clone(),
-        )));
-    }
-    let node = args
-        .node
-        .clone()
-        .or_else(|| std::env::var("NODE_NAME").ok());
-    // --vulns learns about new containers from the resolver's pod watch.
     let mut vuln_slot = None;
-    let notify = vuln_client.map(|client| {
-        let (ctx, crx) = mpsc::channel(256);
-        let (etx, erx) = mpsc::channel::<ExecObservation>(1024);
-        let watcher = VulnWatcher::new(
-            Some(std::sync::Arc::new(client)),
-            args.mlab.cache(),
-            LangLimits::default(),
-        );
-        vuln_slot = Some((watcher, crx, erx, etx));
-        PodNotify {
-            tx: ctx,
-            existing: args.rollback,
-            namespaces: args.namespace.clone().into_iter().collect(),
-        }
-    });
-    let resolver = (args.ebpf || args.vulns)
-        .then(|| NodePodResolver::spawn_with_notify(client.clone(), node, notify, cancel.clone()));
-    if let Some(resolver) = resolver.filter(|_| args.ebpf) {
-        // The resolver watches pods (scoped to this node) so kernel events can
-        // be tagged with pod/namespace context.
+    if docker {
+        let resolver = Arc::new(DockerResolver::new(docker::data_root()));
         let config = ProbeConfig {
             kinds: KindFilter::new(args.kind.clone()),
         };
         sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
+    } else {
+        // Establish and validate the connection up-front so kubeconfig/RBAC errors
+        // are reported clearly before any long-running watch starts.
+        let client = build_client(kubeconfig.as_deref()).await?;
+        preflight(&client).await?;
+
+        // Assemble the active sources. The output pipeline treats them uniformly.
+        sources.push(Box::new(K8sEventSource::new(
+            client.clone(),
+            args.namespace.clone(),
+            args.rollback,
+        )));
+        if args.logs {
+            sources.push(Box::new(K8sLogSource::new(
+                client.clone(),
+                args.namespace.clone(),
+            )));
+        }
+        let node = args
+            .node
+            .clone()
+            .or_else(|| std::env::var("NODE_NAME").ok());
+        // --vulns learns about new containers from the resolver's pod watch.
+        let notify = vuln_client.map(|client| {
+            let (ctx, crx) = mpsc::channel(256);
+            let (etx, erx) = mpsc::channel::<ExecObservation>(1024);
+            let watcher = VulnWatcher::new(
+                Some(std::sync::Arc::new(client)),
+                args.mlab.cache(),
+                LangLimits::default(),
+            );
+            vuln_slot = Some((watcher, crx, erx, etx));
+            PodNotify {
+                tx: ctx,
+                existing: args.rollback,
+                namespaces: args.namespace.clone().into_iter().collect(),
+            }
+        });
+        let resolver = (args.ebpf || args.vulns).then(|| {
+            NodePodResolver::spawn_with_notify(client.clone(), node, notify, cancel.clone())
+        });
+        if let Some(resolver) = resolver.filter(|_| args.ebpf) {
+            // The resolver watches pods (scoped to this node) so kernel events can
+            // be tagged with pod/namespace context.
+            let config = ProbeConfig {
+                kinds: KindFilter::new(args.kind.clone()),
+            };
+            sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
+        }
     }
 
     tracing::info!(
@@ -208,7 +232,8 @@ async fn watch(kubeconfig: Option<PathBuf>, args: WatchArgs) -> Result<()> {
         rollback = args.rollback,
         output = ?args.output,
         sources = sources.len(),
-        "connected to cluster, starting watch",
+        docker,
+        "starting watch",
     );
 
     // One bounded channel funnels every producer into a single printer, so

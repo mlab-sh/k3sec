@@ -5,6 +5,15 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Docker hosts without Kubernetes** (`--docker`): `inventory`, `vulns` and
+  `watch --ebpf` on the containers of the local Docker daemon, read from its
+  state files (`/var/lib/docker`, or `$DOCKER_DATA_ROOT`). A container shows as
+  namespace `docker`, pod and container its name.
+
 ## [v1.6.0]
 
 ### Added

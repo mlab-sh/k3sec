@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 
-use k3sec_core::{NodeVersions, OutputFormat};
+use k3sec_core::{docker, NodeVersions, OutputFormat, PodContainer};
 use k3sec_inventory::render::{self, Filter};
 use k3sec_inventory::{
     check_root_access, group_by_image, match_images, node_inventory, pids_by_container, scan_image,
@@ -99,8 +99,12 @@ pub struct VulnsArgs {
     pub kev_only: bool,
 }
 
-pub async fn inventory(kubeconfig: Option<PathBuf>, args: InventoryArgs) -> Result<()> {
-    let (node, images) = collect(kubeconfig, &args.scope).await?;
+pub async fn inventory(
+    kubeconfig: Option<PathBuf>,
+    docker: bool,
+    args: InventoryArgs,
+) -> Result<()> {
+    let (node, images) = collect(kubeconfig, docker, &args.scope).await?;
     if let Some(dir) = &args.sbom {
         for inv in images.iter().filter(|i| !i.containers.is_empty()) {
             let path = k3sec_inventory::sbom::write(dir, inv)?;
@@ -116,9 +120,9 @@ pub async fn inventory(kubeconfig: Option<PathBuf>, args: InventoryArgs) -> Resu
     print(&out)
 }
 
-pub async fn vulns(kubeconfig: Option<PathBuf>, args: VulnsArgs) -> Result<()> {
+pub async fn vulns(kubeconfig: Option<PathBuf>, docker: bool, args: VulnsArgs) -> Result<()> {
     let client = args.mlab.client()?;
-    let (node, mut images) = collect(kubeconfig, &args.scope).await?;
+    let (node, mut images) = collect(kubeconfig, docker, &args.scope).await?;
     if let Some(n) = &node {
         images.push(node_inventory(n, args.scope.match_kernel));
     }
@@ -142,25 +146,16 @@ pub async fn vulns(kubeconfig: Option<PathBuf>, args: VulnsArgs) -> Result<()> {
 /// List this node's containers, then inventory each image once.
 async fn collect(
     kubeconfig: Option<PathBuf>,
+    docker: bool,
     scope: &ScopeArgs,
 ) -> Result<(Option<NodeVersions>, Vec<ImageInventory>)> {
     // Local and cheap: fail on missing privileges before touching the cluster.
     check_root_access()?;
-    let client = build_client(kubeconfig.as_deref()).await?;
-    preflight(&client).await?;
-
-    let node_name = scope
-        .node
-        .clone()
-        .or_else(|| std::env::var("NODE_NAME").ok());
-    let containers =
-        list_node_containers(&client, node_name.as_deref(), scope.namespace.as_deref()).await?;
-    let node = match node_versions(&client, node_name.as_deref()).await {
-        Ok(n) => Some(n),
-        Err(e) => {
-            tracing::warn!("node versions unavailable, node stack not matched: {e:#}");
-            None
-        }
+    // A Docker host has no node stack to match (kubelet, containerd version).
+    let (node, containers) = if docker {
+        (None, docker::list_containers(&docker::data_root())?)
+    } else {
+        cluster_containers(kubeconfig, scope).await?
     };
 
     let total = containers.len();
@@ -183,6 +178,30 @@ async fn collect(
         "inventoried running containers (skipped = no process on this host)"
     );
     Ok((node, images))
+}
+
+/// This node's pod containers and node stack, from the Kubernetes API.
+async fn cluster_containers(
+    kubeconfig: Option<PathBuf>,
+    scope: &ScopeArgs,
+) -> Result<(Option<NodeVersions>, Vec<PodContainer>)> {
+    let client = build_client(kubeconfig.as_deref()).await?;
+    preflight(&client).await?;
+
+    let node_name = scope
+        .node
+        .clone()
+        .or_else(|| std::env::var("NODE_NAME").ok());
+    let containers =
+        list_node_containers(&client, node_name.as_deref(), scope.namespace.as_deref()).await?;
+    let node = match node_versions(&client, node_name.as_deref()).await {
+        Ok(n) => Some(n),
+        Err(e) => {
+            tracing::warn!("node versions unavailable, node stack not matched: {e:#}");
+            None
+        }
+    };
+    Ok((node, containers))
 }
 
 fn color() -> bool {

@@ -8,6 +8,7 @@
 //! came from: Kubernetes events, pod logs, or (from M2) the eBPF probe.
 
 pub mod cgroup;
+pub mod docker;
 pub mod event;
 pub mod output;
 pub mod resolver;

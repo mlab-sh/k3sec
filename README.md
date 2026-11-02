@@ -47,6 +47,7 @@ and cgroups and talks to the standard Kubernetes API.
 | Vanilla Kubernetes (kubeadm, kind) | Tested: `inventory`, `vulns`, `watch` |
 | Talos | Tested: `inventory`, `vulns`, `watch` |
 | EKS, GKE, AKS | Expected to work, not tested (not on Fargate / Autopilot: no `hostPID`) |
+| Docker host, no cluster (`--docker`) | Tested: `inventory`, `vulns`, `watch --ebpf` |
 | CRI-O / cri-dockerd nodes | Containers and events work; the runtime itself isn't version-matched |
 
 Details on the [wiki home](https://github.com/mlab-sh/k3sec/wiki#cluster-compatibility).
@@ -160,6 +161,14 @@ sudo k3sec watch --ebpf --rules ./rules/ # + kernel events + YARA detections
 sudo k3sec inventory --sbom ./sboms/     # what runs on this node, what's loaded
 sudo k3sec vulns --only-loaded           # CVEs in code that is in memory
 sudo k3sec watch --vulns                 # vulnerability events for new pods
+```
+
+No cluster? `--docker` reads the containers of the local Docker daemon instead
+(`/var/lib/docker`, or `$DOCKER_DATA_ROOT`):
+
+```bash
+sudo k3sec vulns --docker                # CVEs of the running Docker containers
+sudo k3sec watch --docker --ebpf         # exec, connect, file writes per container
 ```
 
 Diagnostics go to **stderr** (`RUST_LOG=k3sec=debug`), output to **stdout**,

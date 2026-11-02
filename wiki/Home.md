@@ -41,6 +41,7 @@ names, cgroupfs or systemd driver) and talks to the standard Kubernetes API.
 | **Vanilla Kubernetes** (kubeadm, kind) | Tested on kind (v1.33.1): `inventory`, `vulns`, `watch`. |
 | **Talos** | Tested (Talos v1.10.6, Kubernetes v1.33.3): `inventory`, `vulns`, `watch` (exec, connect, file_write), DaemonSet admitted. Talos enforces Pod Security `baseline`: the manifest labels its namespace `privileged`. |
 | **EKS, GKE, AKS** | Expected to work, not tested. Vendor version tags (`-eks-…`, `-gke.…`) are stripped before matching. |
+| **Docker host, no cluster** (`--docker`) | Tested (Docker 29.1): `inventory`, `vulns`, `watch --ebpf`. Containers are read from the daemon's state files (`/var/lib/docker`, or `$DOCKER_DATA_ROOT`) and shown as namespace `docker`, pod = container name. No Kubernetes events, logs or node stack; Podman and nerdctl are not read. |
 | **CRI-O / cri-dockerd nodes** | Containers and events work; the runtime itself is not in the [node stack](Node-Stack) (only containerd is matched). |
 
 The eBPF probe needs a kernel with BTF and tracefs, whatever the distribution;
