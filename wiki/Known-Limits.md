@@ -65,5 +65,6 @@ What k3sec does **not** see yet, and how it shows up.
   the writer's `/proc/<pid>/root` and sees nothing there. On a real node (or
   VM), `hostPID` is the kernel's namespace and all of it works.
 - **tracefs** must be mounted on the node at `/sys/kernel/tracing` (systemd
-  does it); the DaemonSet mounts it from there. Without it the `ebpf` source
-  reports `tracefs not found` and the others keep going.
+  and Talos do it; Talos in Docker, `talosctl cluster create`, does not); the
+  DaemonSet mounts it from there. Without it the `ebpf` source reports
+  `tracefs not found` and the others keep going.

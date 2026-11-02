@@ -45,7 +45,7 @@ and cgroups and talks to the standard Kubernetes API.
 | k3s | Tested, the reference lab |
 | k0s | Tested: `inventory`, `vulns`, `watch` |
 | Vanilla Kubernetes (kubeadm, kind) | Tested: `inventory`, `vulns`, `watch` |
-| Talos | Tested: `inventory`, `vulns`, DaemonSet |
+| Talos | Tested: `inventory`, `vulns`, `watch` |
 | EKS, GKE, AKS | Expected to work, not tested (not on Fargate / Autopilot: no `hostPID`) |
 | CRI-O / cri-dockerd nodes | Containers and events work; the runtime itself isn't version-matched |
 
