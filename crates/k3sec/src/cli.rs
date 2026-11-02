@@ -20,7 +20,7 @@ use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
 
 use crate::vulns::{InventoryArgs, MlabArgs, VulnsArgs};
 
-/// k3sec, runtime security for Kubernetes clusters (k3s first).
+/// k3sec, runtime security for Kubernetes, Talos and Docker hosts.
 #[derive(Debug, Parser)]
 #[command(name = "k3sec", version, about, long_about = None)]
 pub struct Cli {

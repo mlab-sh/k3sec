@@ -1,6 +1,9 @@
 # k3sec
 
-**Runtime security for Kubernetes clusters, k3s first, in one Rust binary.**
+**Runtime security for Kubernetes, Talos and Docker hosts, in one Rust binary.**
+
+The *k3* in k3sec is its three targets, Kubernetes, Talos and Docker, not k3s:
+k3s is one supported distribution among others.
 
 k3sec gives you one real-time stream of what happens in your cluster, normalized
 into a single event schema ([`SecEvent`](SecEvent-Schema)), and tells you which
@@ -30,7 +33,7 @@ docker.io/library/nginx:1.25.3 (sha256:c7a6ad68be85)  Debian GNU/Linux 12 (bookw
 
 ## Cluster compatibility
 
-k3sec is built for k3s but nothing in it is k3s-only: it reads containers
+Nothing in k3sec is tied to one distribution: it reads containers
 through the node's `/proc` and cgroups (containerd, CRI-O and Docker cgroup
 names, cgroupfs or systemd driver) and talks to the standard Kubernetes API.
 

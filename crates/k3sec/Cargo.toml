@@ -1,6 +1,6 @@
 [package]
 name = "k3sec"
-description = "Runtime security CLI for Kubernetes (k3s, k0s, Talos, ...), live k8s + eBPF event streaming"
+description = "Runtime security CLI for Kubernetes, Talos and Docker hosts, live k8s + eBPF event streaming"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,7 +20,7 @@ license-file = ["../../LICENSE", "0"]
 section = "admin"
 priority = "optional"
 extended-description = """\
-k3sec streams what happens on a k3s node (Kubernetes events, eBPF exec, connect \
+k3sec streams what happens on a Kubernetes, Talos or Docker host (Kubernetes events, eBPF exec, connect \
 and file writes, YARA detections) and tells which vulnerabilities touch code that \
 is actually loaded in memory. Standalone CLI, or a tool of mlab-agent for an \
 mlab.sh workspace. The k3sec.service unit is installed but not enabled."""
@@ -37,7 +37,7 @@ assets = [
 # RPM for pkg.mlab.sh/rpm. auto-req is off (ldd on the aarch64 cross build);
 # glibc >= 2.35 is the floor of the ubuntu-22.04 build hosts.
 [package.metadata.generate-rpm]
-summary = "Runtime security for k3s nodes: live events, eBPF, YARA, loaded vulnerabilities"
+summary = "Runtime security for Kubernetes, Talos and Docker hosts: live events, eBPF, YARA, loaded vulnerabilities"
 license = "Apache-2.0"
 url = "https://github.com/mlab-sh/k3sec"
 assets = [

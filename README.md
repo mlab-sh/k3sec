@@ -1,9 +1,11 @@
 # k3sec
 
-Runtime security CLI for **Kubernetes** clusters, built for **k3s** and tested
-on k0s, vanilla Kubernetes and Talos. Written in Rust.
+Runtime security CLI for **Kubernetes**, **Talos** and **Docker** hosts.
+Written in Rust.
 
-![](./.github/banner.png)
+> **About the name:** the *k3* in k3sec is its three targets, **Kubernetes**,
+> **Talos** and **Docker**. It is not tied to k3s: k3s is one supported
+> distribution among others (k0s, kubeadm, kind, managed clusters).
 
 ![status: beta](https://img.shields.io/badge/status-beta-orange)
 ![development: active](https://img.shields.io/badge/development-active-brightgreen)
