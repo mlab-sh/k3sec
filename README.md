@@ -1,5 +1,7 @@
 # k3sec
 
+![k3sec](.github/banner.png)
+
 Runtime security CLI for **Kubernetes**, **Talos** and **Docker** hosts.
 Written in Rust.
 
