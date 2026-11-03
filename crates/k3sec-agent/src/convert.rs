@@ -63,6 +63,25 @@ fn trimmed(
             ]
         }
         Source::Yara => &["artifact", "trigger", "pid"],
+        // The raw Event object: its type, reason, message, count, source and
+        // timestamps are the event's own fields; its object metadata
+        // (managedFields…) is of no use off the cluster.
+        Source::K8sEvent => {
+            let involved = payload.get("involvedObject").map(|o| {
+                let mut o = o.clone();
+                if let Some(o) = o.as_object_mut() {
+                    o.retain(|k, _| {
+                        matches!(k.as_str(), "kind" | "name" | "namespace" | "fieldPath")
+                    });
+                }
+                o
+            });
+            payload = match involved {
+                Some(o) => serde_json::json!({ "involvedObject": o }),
+                None => serde_json::Value::Null,
+            };
+            &[]
+        }
         _ => &[],
     };
     if let Some(obj) = payload.as_object_mut() {
@@ -203,6 +222,23 @@ mod tests {
         let w = event(&log);
         assert_eq!(w.metadata["pod"], "other", "not the object: kept");
         assert_eq!(w.payload["pid"], 1);
+    }
+
+    #[test]
+    fn k8s_event_payload_is_its_involved_object() {
+        let ev = SecEvent::builder(Source::K8sEvent, chrono::Utc::now())
+            .kind("BackOff")
+            .payload(serde_json::json!({
+                "metadata": {"uid": "u", "managedFields": [{"manager": "kubelet"}]},
+                "involvedObject": {"kind": "Pod", "name": "web-0", "namespace": "demo",
+                                   "uid": "p", "resourceVersion": "9", "fieldPath": "spec.containers{app}"},
+                "message": "Back-off restarting", "count": 7, "reason": "BackOff"}))
+            .build();
+        assert_eq!(
+            event(&ev).payload,
+            serde_json::json!({"involvedObject": {"kind": "Pod", "name": "web-0",
+                "namespace": "demo", "fieldPath": "spec.containers{app}"}})
+        );
     }
 
     #[test]

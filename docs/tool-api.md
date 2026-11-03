@@ -92,7 +92,9 @@ does not say elsewhere: for `ebpf`, the full `container_id` and `path`
 (exec, file_write, secret_read), `dest` (connect, `ip:port`, for IP
 enrichment on the mlab side), `addr` (listen, accept, udp), `server` and
 `query` (dns), `technique` (escape), `old_uid` (privesc); for `yara`,
-`matches`. In agent mode `vuln` events are not produced by the tool: matching
+`matches`; for `k8s-event`, its `involvedObject` (`kind`, `name`, `namespace`,
+`fieldPath`). An Event object updated again (its `count` going up) is sent
+once per 5 minutes, with the count of the moment. In agent mode `vuln` events are not produced by the tool: matching
 happens in mlab from the inventory (below).
 
 ## Config and the local policy

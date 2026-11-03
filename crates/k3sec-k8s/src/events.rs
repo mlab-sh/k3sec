@@ -112,6 +112,7 @@ async fn run_once(
 
     // Only populated while replaying backlog (rollback && first sync).
     let mut backlog: Vec<SecEvent> = Vec::new();
+    let mut updates = Updates::default();
 
     loop {
         tokio::select! {
@@ -122,6 +123,10 @@ async fn run_once(
                     match ev {
                         // Live change after the initial sync: always emitted.
                         WatchEvent::Apply(e) => {
+                            let uid = e.metadata.uid.clone().unwrap_or_default();
+                            if !updates.due(&uid, std::time::Instant::now()) {
+                                continue; // the same Event's count going up
+                            }
                             if sink.send(to_sec_event(&e)).await.is_err() {
                                 return Ok(()); // printer gone
                             }
@@ -150,6 +155,35 @@ async fn run_once(
                 // The watcher yields recoverable errors and keeps going.
                 Some(Err(e)) => tracing::debug!(error = %e, "recoverable watcher error"),
                 None => return Err(anyhow!("event watch stream ended unexpectedly")),
+            }
+        }
+    }
+}
+
+/// An Event object updated again (its `count` going up: a BackOff every few
+/// seconds) is reported once per this, with the count of the moment.
+const UPDATE_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// When each Event object (by uid) was last reported.
+#[derive(Default)]
+struct Updates(std::collections::HashMap<String, std::time::Instant>);
+
+impl Updates {
+    /// Whether this Event (new, or updated past [`UPDATE_EVERY`]) is reported.
+    fn due(&mut self, uid: &str, now: std::time::Instant) -> bool {
+        if uid.is_empty() {
+            return true;
+        }
+        if self.0.len() >= 16_384 {
+            // Events live an hour in the API server; older entries are dead.
+            self.0
+                .retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(3600));
+        }
+        match self.0.get(uid) {
+            Some(at) if now.duration_since(*at) < UPDATE_EVERY => false,
+            _ => {
+                self.0.insert(uid.to_string(), now);
+                true
             }
         }
     }
@@ -327,5 +361,17 @@ mod tests {
         let back: SecEvent = serde_json::from_str(&line).unwrap();
         assert_eq!(back.object, sec.object);
         assert_eq!(back.severity, sec.severity);
+    }
+
+    #[test]
+    fn an_events_updates_are_reported_once_per_window() {
+        let mut u = Updates::default();
+        let t0 = std::time::Instant::now();
+        let at = |s| t0 + std::time::Duration::from_secs(s);
+        assert!(u.due("a", t0), "new");
+        assert!(!u.due("a", at(10)) && !u.due("a", at(299)), "count bumps");
+        assert!(u.due("b", at(10)), "another Event");
+        assert!(u.due("a", at(300)), "the count of the moment, later");
+        assert!(u.due("", t0) && u.due("", t0), "no uid: never held");
     }
 }
