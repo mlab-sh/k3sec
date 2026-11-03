@@ -2152,6 +2152,7 @@ dependencies = [
  "k3sec-api",
  "k3sec-core",
  "owo-colors",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

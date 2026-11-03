@@ -94,6 +94,17 @@ pub fn scan_image(
             .flat_map(|&p| procfs::open_files(p))
             .filter(|f| lang::is_java_archive(f)),
     );
+    // Runtimes built from source: loaded when running or mapped (libpython).
+    let mut runtimes = pkgdb::runtimes::scan(&rootfs, |p| index.owner(&rootfs, p).is_some());
+    for p in &mut runtimes {
+        if p.files
+            .iter()
+            .any(|f| mapped.contains(f) || exes.contains(f))
+        {
+            p.reachability = crate::model::Reachability::Loaded;
+        }
+    }
+    packages.extend(runtimes);
     let mut lang = lang::scan(&rootfs, &exes, limits);
     crate::reach::mark_running_binaries(&mut lang, &exes);
     packages.extend(lang);

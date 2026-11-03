@@ -15,10 +15,12 @@ What k3sec does **not** see yet, and how it shows up.
 
 ## Inventory
 
-- **Binaries no package owns.** The official `httpd` and `redis` images build
-  the server from source into `/usr/local`: their own CVEs are not matched, only
-  those of the libraries they load (lab: httpd 8 loaded packages, none of them
-  `httpd`). Go binaries are the exception, through their build info.
+- **Binaries no package owns.** Runtimes built from source are recognized by
+  their version string (Python, Node.js, PHP, Ruby, Perl, httpd, Redis), the
+  JDK by its `release` file and the Go toolchain by its `VERSION`, at the paths
+  the official images use (`/usr/local`, `/opt/java/openjdk`). Elsewhere, or
+  for other software built from source, only the libraries it loads are seen.
+  Go binaries are the exception, through their build info.
 - **Java archives without Maven metadata.** Jars are identified by their
   `pom.properties`; a hand-built jar (Tomcat's `catalina.jar`) is not.
 - **Python without a lockfile.** Packages installed by `pip` into

@@ -30,6 +30,7 @@ Distroless images report `PRETTY_NAME="Distroless"` with `ID=debian`.
 | **apk** | `/lib/apk/db/installed` | `F:` directory + `R:` files | `o:` origin = source package |
 | **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages` | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
 | **BusyBox, no package db** | `/bin/busybox` | the binary itself | version from its `BusyBox vX.Y.Z` banner, matched by CPE; only when the image has no package database (official Prometheus images) |
+| **Runtimes built from source** | `/usr/local/lib/libpython3.*`, `/usr/local/bin/{node,php,perl,redis-server}`, `libphp`, `libruby`, `/usr/local/apache2/bin/httpd`, `/opt/java/openjdk/release`, `/usr/local/go/VERSION` | the files found | version from the binary's own string (`node.js/v22.23.4`, `X-Powered-By: PHP/8.3.36`…), matched by CPE (Go as `stdlib`); a file a package owns is left to it. 18 of 45 audit images |
 
 Distro advisories are filed against the **source** package: Debian tracks
 `openssh`, not `openssh-server`; `libssl3` is matched as `openssl`, `libc6` as

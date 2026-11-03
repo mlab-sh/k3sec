@@ -5,6 +5,7 @@ pub mod apk;
 pub mod dpkg;
 #[cfg(feature = "rpm")]
 pub mod rpm;
+pub mod runtimes;
 
 use crate::model::{Coordinate, Package, PackageKind};
 use crate::os::OsRelease;
