@@ -79,6 +79,7 @@ whole tree.
 | `go.sum` | Go | `module version`, deduplicated |
 | `requirements.txt` | PyPI | `==` pins only (extras, markers, comments stripped) |
 | `poetry.lock` | PyPI | `[[package]]` |
+| `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` | PyPI | `Name` / `Version`; `RECORD` lists the files, a mapped `.so` makes the distribution **loaded**. Inside `site-packages` only these are read (Home Assistant: 1 627 distributions) |
 | `composer.lock` | Packagist | `packages` + `packages-dev` |
 | `Gemfile.lock` | RubyGems | top-level `GEM` specs |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |

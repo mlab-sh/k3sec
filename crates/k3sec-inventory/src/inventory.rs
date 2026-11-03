@@ -107,6 +107,13 @@ pub fn scan_image(
     packages.extend(runtimes);
     let mut lang = lang::scan(&rootfs, &exes, limits);
     crate::reach::mark_running_binaries(&mut lang, &exes);
+    // A language package whose own native code is mapped (a Python C extension).
+    for p in lang
+        .iter_mut()
+        .filter(|p| p.files.iter().any(|f| mapped.contains(f)))
+    {
+        p.reachability = crate::model::Reachability::Loaded;
+    }
     packages.extend(lang);
 
     let inventory = ImageInventory {

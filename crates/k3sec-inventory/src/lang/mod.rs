@@ -5,6 +5,7 @@
 pub mod gobuild;
 pub mod jar;
 pub mod lockfiles;
+pub mod python;
 
 use std::collections::HashSet;
 use std::fs;
@@ -67,6 +68,7 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         visited: 0,
         lockfiles: Vec::new(),
         binaries: executables.to_vec(),
+        python: Vec::new(),
     };
     for root in ROOTS {
         if let Some(canon) = fs.resolve(root) {
@@ -76,12 +78,13 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
 
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    let mut push = |eco: &str, name: &str, version: &str, location: &str| {
+    let mut push = |eco: &str, name: &str, version: &str, location: &str, files: Vec<String>| {
         let purl = purl::lang(eco, name, version);
         if seen.insert(purl.clone()) {
             let mut p = Package::new(name, version, PackageKind::Lang, purl);
             p.coordinate = Some(Coordinate::eco(eco, name, version));
             p.location = Some(location.to_string());
+            p.files = files;
             out.push(p);
         }
     };
@@ -91,8 +94,24 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
             continue;
         };
         for (name, version) in kind.parse(&content) {
-            push(kind.ecosystem(), &name, &version, path);
+            push(kind.ecosystem(), &name, &version, path, Vec::new());
         }
+    }
+
+    // Installed Python distributions; a mapped C extension makes one loaded.
+    for dist in &walk.python {
+        let meta = ["METADATA", "PKG-INFO"]
+            .iter()
+            .find_map(|f| fs.read_string(&format!("{dist}/{f}"), 1024 * 1024).ok());
+        let Some((name, version)) = meta.as_deref().and_then(python::metadata) else {
+            continue;
+        };
+        let site = dist.rsplit_once('/').map_or("/", |(s, _)| s);
+        let files = fs
+            .read_string(&format!("{dist}/RECORD"), 16 * 1024 * 1024)
+            .map(|r| python::shared_objects(&r, site))
+            .unwrap_or_default();
+        push("PyPI", &name, &version, dist, files);
     }
 
     // Running binaries come first, so the cap only ever drops walk finds.
@@ -115,7 +134,7 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         };
         if bytes.starts_with(b"PK\x03\x04") {
             for (name, version) in jar::parse(&bytes) {
-                push("Maven", &name, &version, path);
+                push("Maven", &name, &version, path, Vec::new());
             }
             continue;
         }
@@ -124,10 +143,10 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         }
         if let Some(info) = gobuild::parse(&bytes) {
             if !info.go_version.is_empty() {
-                push("Go", "stdlib", &info.go_version, path);
+                push("Go", "stdlib", &info.go_version, path, Vec::new());
             }
             for (module, version) in &info.deps {
-                push("Go", module, version, path);
+                push("Go", module, version, path, Vec::new());
             }
         }
     }
@@ -144,6 +163,8 @@ struct Walk<'a> {
     visited: usize,
     lockfiles: Vec<(String, Lockfile)>,
     binaries: Vec<String>,
+    /// `*.dist-info` / `*.egg-info` directories.
+    python: Vec<String>,
 }
 
 impl Walk<'_> {
@@ -168,7 +189,12 @@ impl Walk<'_> {
                 continue; // `DirEntry::metadata` does not follow symlinks
             };
             if meta.is_dir() {
-                if name == "node_modules" {
+                if name.ends_with(".dist-info") || name.ends_with(".egg-info") {
+                    self.python.push(child);
+                } else if path.ends_with("/site-packages") || path.ends_with("/dist-packages") {
+                    // The distributions' own files: their dist-info says
+                    // what they are (thousands of entries otherwise).
+                } else if name == "node_modules" {
                     // npm ≥ 7's hidden lockfile describes the whole tree.
                     let hidden = format!("{child}/.package-lock.json");
                     if self.fs.exists(&hidden) {
@@ -193,6 +219,42 @@ impl Walk<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_distributions_from_site_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path().join("usr/local/lib/python3.12/site-packages");
+        let dist = site.join("aiohttp-3.9.1.dist-info");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(
+            dist.join("METADATA"),
+            "Metadata-Version: 2.1\nName: aiohttp\nVersion: 3.9.1\n\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dist.join("RECORD"),
+            "aiohttp/_parser.cpython-312-x86_64-linux-gnu.so,sha256=x,1\naiohttp/web.py,,\n",
+        )
+        .unwrap();
+        // A package's own tree is not walked: its lockfiles are vendored test data.
+        std::fs::create_dir_all(site.join("aiohttp/tests")).unwrap();
+        std::fs::write(site.join("aiohttp/tests/package-lock.json"), "{}").unwrap();
+        let egg = dir
+            .path()
+            .join("opt/app/venv/lib/python3.12/site-packages/six-1.16.0.egg-info");
+        std::fs::create_dir_all(&egg).unwrap();
+        std::fs::write(egg.join("PKG-INFO"), "Name: six\nVersion: 1.16.0\n").unwrap();
+
+        let pkgs = scan(&Rootfs::new(dir.path()), &[], &LangLimits::default());
+        let aiohttp = pkgs.iter().find(|p| p.name == "aiohttp").unwrap();
+        assert_eq!(aiohttp.purl, "pkg:pypi/aiohttp@3.9.1");
+        assert_eq!(
+            aiohttp.files,
+            ["/usr/local/lib/python3.12/site-packages/aiohttp/_parser.cpython-312-x86_64-linux-gnu.so"]
+        );
+        assert!(pkgs.iter().any(|p| p.purl == "pkg:pypi/six@1.16.0"));
+        assert_eq!(pkgs.len(), 2, "no lockfile from inside a distribution");
+    }
 
     #[test]
     fn walk_finds_lockfiles_and_skips_node_modules_contents() {

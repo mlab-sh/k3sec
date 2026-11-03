@@ -23,9 +23,11 @@ What k3sec does **not** see yet, and how it shows up.
   Go binaries are the exception, through their build info.
 - **Java archives without Maven metadata.** Jars are identified by their
   `pom.properties`; a hand-built jar (Tomcat's `catalina.jar`) is not.
-- **Python without a lockfile.** Packages installed by `pip` into
-  `site-packages` are not inventoried (lab: `python:3.12-slim` shows 0 language
-  deps). Only `requirements.txt` `==` pins and `poetry.lock`.
+- **Python outside the walked roots.** Distributions are read from their
+  `dist-info` / `egg-info` under the usual roots (`/usr/local/lib`, `/opt`,
+  `/home`…); a virtualenv elsewhere is missed. Pure-Python code is never
+  "loaded" (imports are not mapped): only distributions with a mapped C
+  extension are.
 - **Bounded lockfile search.** Usual app dirs only, depth 6, 50 000 entries,
   32 MiB per lockfile, 512 Go binaries and Java archives. `node_modules` is read through its
   hidden lockfile only.
