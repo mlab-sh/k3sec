@@ -28,7 +28,7 @@ Distroless images report `PRETTY_NAME="Distroless"` with `ID=debian`.
 | **dpkg** | `/var/lib/dpkg/status` | `info/<pkg>.list`, `info/<pkg>:<arch>.list` | only `Status: … installed`; `Source:` kept (`bash (5.2.15-2)` gives source name **and** version) |
 | **dpkg, distroless** | `/var/lib/dpkg/status.d/<pkg>` | `status.d/<pkg>.md5sums` | coredns on the lab |
 | **apk** | `/lib/apk/db/installed` | `F:` directory + `R:` files | `o:` origin = source package |
-| **rpm** | `/var/lib/rpm/rpmdb.sqlite` | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
+| **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages` | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
 
 Distro advisories are filed against the **source** package: Debian tracks
 `openssh`, not `openssh-server`; `libssl3` is matched as `openssl`, `libc6` as
@@ -42,8 +42,9 @@ pkg:deb/debian/libssl3@3.0.11-1~deb12u2?arch=amd64&distro=debian-12&upstream=ope
 **rpm and the magic link.** SQLite canonicalizes the path of the database it
 opens, and `/proc/<pid>/root` is a magic link whose target reads as `/`: opened
 in place, it would open the *host's* rpmdb. k3sec copies the database (bounded
-to 64 MiB) to a temp file and opens the copy read-only (`immutable=1`). Older
-Berkeley DB / NDB rpmdbs (EL8 and earlier) are not read.
+to 64 MiB) to a temp file and opens the copy read-only (`immutable=1`). The
+Berkeley DB hash rpmdb (EL7 / EL8) is parsed directly: its values are the same
+header blobs, read from their overflow pages. NDB rpmdbs (SUSE) are not read.
 
 Without `--features rpm`, an rpm image is listed with a warning (real output,
 default build):

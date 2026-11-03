@@ -25,8 +25,8 @@ What k3sec does **not** see yet, and how it shows up.
 - **Bounded lockfile search.** Usual app dirs only, depth 6, 50 000 entries,
   32 MiB per lockfile, 128 Go binaries. `node_modules` is read through its
   hidden lockfile only.
-- **rpm**: `rpmdb.sqlite` only (EL9+, Fedora 33+), and only with
-  `--features rpm`. Go build info: Go ≥ 1.18.
+- **rpm**: `rpmdb.sqlite` (EL9+, Fedora, Hummingbird) and the Berkeley DB
+  `Packages` (EL7 / EL8), only with `--features rpm`. NDB (SUSE) is not read. Go build info: Go ≥ 1.18.
 - **One root per image.** An image is inventoried from one of its containers;
   runtime changes in the other containers of the same digest are not seen.
 - **Node-local.** Only containers with a process on this host: one k3sec per
