@@ -173,6 +173,7 @@ No cluster? `--docker` reads the containers of the local Docker daemon instead
 ```bash
 sudo k3sec vulns --docker                # CVEs of the running Docker containers
 sudo k3sec watch --docker --ebpf         # exec, connect, file writes per container
+sudo k3sec watch --docker --logs --vulns # container output + CVEs of new containers
 sudo k3sec inventory --podman            # what runs under Podman
 ```
 

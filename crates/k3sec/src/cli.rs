@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::docker::{DockerResolver, Engine};
+use k3sec_core::docker::{notify_new_containers, DockerResolver, Engine, EngineLogSource};
 use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
 use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
@@ -133,12 +133,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchArgs) -> Result<()> {
     if engine.is_some() {
         anyhow::ensure!(
-            args.ebpf,
-            "--docker / --podman watch eBPF events only: add --ebpf"
-        );
-        anyhow::ensure!(
-            !args.logs && !args.vulns && !args.rollback,
-            "--logs, --vulns and --rollback need a cluster, not --docker / --podman"
+            args.ebpf || args.logs || args.vulns,
+            "--docker / --podman have no events of their own: add --ebpf, --logs or --vulns"
         );
     }
     if !args.kind.is_empty() && !args.ebpf {
@@ -180,11 +176,34 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
     let mut sources: Vec<Box<dyn EventSource>> = Vec::new();
     let mut vuln_slot = None;
     if let Some(engine) = &engine {
-        let resolver = Arc::new(DockerResolver::new(engine.clone()));
-        let config = ProbeConfig {
-            kinds: KindFilter::new(args.kind.clone()),
-        };
-        sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
+        if args.ebpf {
+            let resolver = Arc::new(DockerResolver::new(engine.clone()));
+            let config = ProbeConfig {
+                kinds: KindFilter::new(args.kind.clone()),
+            };
+            sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
+        }
+        if args.logs {
+            sources.push(Box::new(EngineLogSource::new(engine.clone())));
+        }
+        // --vulns learns about new containers from the engine's state; with
+        // --rollback, about those already running too.
+        if let Some(client) = vuln_client {
+            let (ctx, crx) = mpsc::channel(256);
+            let (etx, erx) = mpsc::channel::<ExecObservation>(1024);
+            let watcher = VulnWatcher::new(
+                Some(std::sync::Arc::new(client)),
+                args.mlab.cache(),
+                LangLimits::default(),
+            );
+            vuln_slot = Some((watcher, crx, erx, etx));
+            tokio::spawn(notify_new_containers(
+                engine.clone(),
+                ctx,
+                args.rollback,
+                cancel.clone(),
+            ));
+        }
     } else {
         // Establish and validate the connection up-front so kubeconfig/RBAC errors
         // are reported clearly before any long-running watch starts.

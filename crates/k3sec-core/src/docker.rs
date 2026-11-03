@@ -12,14 +12,26 @@
 //!
 //! A container shows as namespace `docker` / `podman`, pod and container both its name.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
-use crate::{ContainerInfo, ContainerResolver, PodContainer};
+use crate::{
+    ContainerInfo, ContainerResolver, EventSink, EventSource, PodContainer, SecEvent, Severity,
+    Source,
+};
+
+/// How often the engine's state is read again for new containers and log lines.
+const POLL: Duration = Duration::from_secs(2);
+/// Log bytes read per container per poll: a flood is caught up over polls.
+const MAX_LOG_CHUNK: u64 = 1024 * 1024;
 
 /// The namespace Docker containers are shown under.
 pub const NAMESPACE: &str = "docker";
@@ -61,6 +73,21 @@ impl Engine {
         match self {
             Engine::Docker(root) => list_containers(root),
             Engine::Podman(root) => list_podman(root),
+        }
+    }
+
+    /// Where the engine writes a container's output: Docker's `json-file`
+    /// driver, Podman's `k8s-file` one.
+    fn log_file(&self, id: &str) -> PathBuf {
+        match self {
+            Engine::Docker(root) => root
+                .join("containers")
+                .join(id)
+                .join(format!("{id}-json.log")),
+            Engine::Podman(root) => root
+                .join("overlay-containers")
+                .join(id)
+                .join("userdata/ctr.log"),
         }
     }
 
@@ -230,6 +257,142 @@ impl ContainerResolver for DockerResolver {
     }
 }
 
+/// Send the containers that appear on the engine (and, with `existing`, those
+/// already there) to `tx`, until `cancel` fires: `watch --vulns` scans them.
+pub async fn notify_new_containers(
+    engine: Engine,
+    tx: mpsc::Sender<PodContainer>,
+    existing: bool,
+    cancel: CancellationToken,
+) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut first = true;
+    loop {
+        for c in engine.list().unwrap_or_default() {
+            if seen.insert(c.container_id.clone())
+                && (existing || !first)
+                && tx.send(c).await.is_err()
+            {
+                return;
+            }
+        }
+        first = false;
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(POLL) => {}
+        }
+    }
+}
+
+/// The containers' output, followed from their log files (realtime: what was
+/// written before the watch started is skipped), as `log` events.
+pub struct EngineLogSource {
+    engine: Engine,
+}
+
+impl EngineLogSource {
+    pub fn new(engine: Engine) -> Self {
+        Self { engine }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSource for EngineLogSource {
+    fn name(&self) -> &'static str {
+        "engine-logs"
+    }
+
+    async fn run(self: Box<Self>, sink: EventSink, cancel: CancellationToken) -> Result<()> {
+        // Container id → (read offset, the partial line read so far).
+        let mut tails: HashMap<String, (u64, Vec<u8>)> = HashMap::new();
+        let mut first = true;
+        loop {
+            for c in self.engine.list().unwrap_or_default() {
+                let path = self.engine.log_file(&c.container_id);
+                let Ok(len) = std::fs::metadata(&path).map(|m| m.len()) else {
+                    continue;
+                };
+                // A container already running at start is followed from its end.
+                let (offset, partial) = tails
+                    .entry(c.container_id.clone())
+                    .or_insert_with(|| (if first { len } else { 0 }, Vec::new()));
+                if len < *offset {
+                    *offset = 0; // rotated or truncated
+                    partial.clear();
+                }
+                let Some(chunk) = read_from(&path, *offset, (len - *offset).min(MAX_LOG_CHUNK))
+                else {
+                    continue;
+                };
+                *offset += chunk.len() as u64;
+                partial.extend(chunk);
+                let Some(end) = partial.iter().rposition(|&b| b == b'\n') else {
+                    continue;
+                };
+                let complete: Vec<u8> = partial.drain(..=end).collect();
+                for line in String::from_utf8_lossy(&complete).lines() {
+                    if let Some((at, msg)) = parse_log_line(&self.engine, line) {
+                        let ev = SecEvent::builder(Source::K8sLog, at)
+                            .kind("log")
+                            .severity(Severity::Info)
+                            .namespace(c.namespace.clone())
+                            .object(format!("{}/{}", c.pod, c.container))
+                            .message(msg)
+                            .meta("pod", c.pod.clone())
+                            .meta("container", c.container.clone())
+                            .build();
+                        if sink.send(ev).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            first = false;
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(POLL) => {}
+            }
+        }
+    }
+}
+
+fn read_from(path: &Path, offset: u64, len: u64) -> Option<Vec<u8>> {
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = Vec::with_capacity(len as usize);
+    f.take(len).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// Docker `json-file`: `{"log":"GET / 200\n","stream":"stdout","time":"…"}`.
+/// Podman `k8s-file`: `2026-11-03T15:07:00.1+00:00 stdout F GET / 200`.
+fn parse_log_line(engine: &Engine, line: &str) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
+    let parse_time = |t: &str| {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .ok()
+            .map(|t| t.with_timezone(&chrono::Utc))
+    };
+    match engine {
+        Engine::Docker(_) => {
+            #[derive(Deserialize)]
+            struct Line {
+                log: String,
+                #[serde(default)]
+                time: String,
+            }
+            let l: Line = serde_json::from_str(line).ok()?;
+            let at = parse_time(&l.time).unwrap_or_else(chrono::Utc::now);
+            Some((at, l.log.trim_end_matches(['\n', '\r']).to_string()))
+        }
+        Engine::Podman(_) => {
+            let mut f = line.splitn(4, ' ');
+            let at = parse_time(f.next()?).unwrap_or_else(chrono::Utc::now);
+            let (_stream, _flag) = (f.next()?, f.next()?);
+            Some((at, f.next().unwrap_or("").to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +486,23 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn engine_log_lines() {
+        let docker = Engine::Docker(PathBuf::new());
+        let (at, msg) = parse_log_line(
+            &docker,
+            r#"{"log":"GET / 200\n","stream":"stdout","time":"2026-11-03T15:07:00.123Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(msg, "GET / 200");
+        assert_eq!(at.to_rfc3339(), "2026-11-03T15:07:00.123+00:00");
+        assert!(parse_log_line(&docker, "not json").is_none());
+
+        let podman = Engine::Podman(PathBuf::new());
+        let (_, msg) =
+            parse_log_line(&podman, "2026-11-03T15:07:00.1+00:00 stdout F hello world").unwrap();
+        assert_eq!(msg, "hello world");
     }
 }
