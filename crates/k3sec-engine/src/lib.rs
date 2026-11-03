@@ -8,12 +8,14 @@
 //! Depends only on `k3sec-core` (plus `yara-x`); it knows nothing about
 //! Kubernetes or eBPF.
 
+pub mod detect;
 pub mod detection;
 pub mod engine;
 pub mod rules;
 
 use std::time::Duration;
 
+pub use detect::DetectRules;
 pub use detection::{detection_event, scan_bytes, RuleHit};
 pub use engine::DetectionEngine;
 pub use rules::RuleSet;

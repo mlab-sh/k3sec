@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use k3sec_core::docker::{notify_new_containers, DockerResolver, Engine, EngineLogSource};
 use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
-use k3sec_engine::{DetectionEngine, EngineConfig};
+use k3sec_engine::{DetectRules, DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
 use k3sec_k8s::{
     build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver, PodNotify,
@@ -101,6 +101,12 @@ pub struct WatchArgs {
     #[arg(long, value_name = "N")]
     pub scan_workers: Option<usize>,
 
+    /// Detection rules: a JSON file or a directory of `*.json` files, each
+    /// rule a CEL condition over the event that raises its severity, tags it
+    /// with MITRE ATT&CK ids or drops it. Reloaded when a file changes.
+    #[arg(long, value_name = "PATH")]
+    pub detect: Option<PathBuf>,
+
     /// Inventory + vulnerability-match each new pod image in the background,
     /// emitting `source: "vuln"` events (needs root). Existing pods only with
     /// --rollback. With --ebpf, exec'd binaries promote dormant packages.
@@ -142,6 +148,12 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
     }
     if args.rules.is_some() && !args.ebpf {
         tracing::warn!("--rules has no effect without --ebpf; scanning is driven by eBPF events");
+    }
+
+    // Like the YARA rules: a broken rule file refuses to start.
+    let mut detect = args.detect.as_deref().map(DetectRules::load).transpose()?;
+    if let Some(d) = &detect {
+        tracing::info!(rules = d.len(), "detection rules loaded");
     }
 
     // Established up-front so shutdown (and the pod resolver) share one signal.
@@ -276,10 +288,25 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
     // Exec events also feed --vulns reachability (best effort, never blocks).
     let exec_tx = vuln_slot.as_ref().map(|(_, _, _, etx)| etx.clone());
     let printer_handle = tokio::spawn(async move {
+        let mut checked = std::time::Instant::now();
         while let Some(event) = rx.recv().await {
             if let Some((etx, obs)) = exec_tx.as_ref().zip(ExecObservation::from_event(&event)) {
                 let _ = etx.try_send(obs);
             }
+            let event = match detect.as_mut() {
+                Some(d) => {
+                    // shortcut: checked when events flow, a quiet node picks up an edit with its next event.
+                    if checked.elapsed() >= Duration::from_secs(2) {
+                        checked = std::time::Instant::now();
+                        d.reload_if_changed();
+                    }
+                    match d.apply(event) {
+                        Some(e) => e,
+                        None => continue,
+                    }
+                }
+                None => event,
+            };
             printer.emit(&event);
         }
     });

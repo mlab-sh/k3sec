@@ -35,6 +35,43 @@ Only the programs for the requested `--kind`s are attached.
 | **Cryptominer** | the event's kind, its severity raised, `cryptominer` = the reason | a DNS query for a mining pool's domain (supportxmr, nanopool, moneroocean, c3pool, 2miners, f2pool, unmineable…) or the exec of a miner's binary (xmrig, cpuminer, t-rex, lolminer…): critical; a connect to a stratum port (3333, 4444, 5555, 7777, 14444…): warning. A renamed miner: `rules/cryptominer.yar` |
 | **Drift** | `exec`, severity critical, `drift=true`, "a binary not in the image" | the exec'd file is in the container's writable overlay layer (`upperdir` of its root mount): added or modified after the container started. The layer is read once per container, through another process of it when the exec is already gone |
 
+Every eBPF event carries the MITRE ATT&CK techniques it is evidence of in
+`mitre` (comma-separated): drift `T1105`, fileless `T1620`, deleted binary
+`T1070.004`, hidden path `T1564.001`, service account token read `T1528`,
+other credentials `T1552.001`, escape `T1611`, privilege escalation
+`T1548.001`, cryptominer `T1496`.
+
+## Detection rules (`--detect`)
+
+`watch --detect <file|dir>` runs your own rules on every event (eBPF, logs,
+Kubernetes events, YARA, vulns): JSON files, one [CEL](https://cel.dev)
+condition per rule. A rule that matches raises the event's severity, adds its
+MITRE ids to `mitre` and its name to `rule` (and in front of the message), or,
+with `"drop": true`, drops the event: the exceptions that keep a node quiet.
+
+```json
+{"rules": [
+  {"name": "shell-reads-token",
+   "when": "kind == 'secret_read' && meta.comm in ['cat', 'sh'] && payload.path.contains('serviceaccount')",
+   "severity": "critical", "mitre": ["T1059.004"]},
+  {"name": "shell-under-nginx",
+   "when": "kind == 'exec' && meta.ancestry.contains('nginx') && meta.comm in ['sh', 'bash']",
+   "severity": "critical", "mitre": ["T1059.004"]},
+  {"name": "quiet-dns", "when": "kind == 'dns' && namespace == 'kube-system'", "drop": true}
+]}
+```
+
+In a condition: `source` (`ebpf`, `yara`, `vuln`, `k8s-event`, `k8s-log`),
+`kind`, `severity`, `namespace`, `object`, `message`, `meta` (the `metadata`
+strings) and `payload` (see [SecEvent schema](SecEvent-Schema)). A condition
+on a key the event does not have (`meta.ancestry` of a process with no parent
+in its container) is false. On the lab, the token read above went from
+warning to `critical`, `rule=shell-reads-token`, `mitre=T1528,T1059.004`.
+
+Rules load at startup: a broken file refuses to start. Files are checked
+every 2 s while events flow and reloaded when one is added, removed or
+modified; a broken edit is logged and the rules in force stay.
+
 ## Build
 
 The probe is Linux-only, behind a cargo feature. The kernel program

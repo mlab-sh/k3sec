@@ -488,6 +488,7 @@ fn build_event(
     if let Some((why, _)) = mining_signal(ev, probe_kind) {
         builder = builder.meta("cryptominer", why);
     }
+    builder = builder.meta("mitre", mitre(ev, probe_kind, facts).join(","));
     if let Some((ppid, _)) = facts.ancestors.first() {
         let chain: Vec<&str> = facts
             .ancestors
@@ -510,6 +511,37 @@ fn build_event(
 
     builder = builder.payload(payload(ev, probe_kind, container_id, info.as_ref()));
     builder.build()
+}
+
+/// The MITRE ATT&CK techniques an event is evidence of (`meta.mitre`).
+fn mitre(ev: &Event, probe_kind: ProbeKind, facts: &Facts) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if facts.drift {
+        out.push("T1105"); // Ingress Tool Transfer
+    }
+    match facts.anomaly {
+        Some(ExecAnomaly::Fileless) => out.push("T1620"), // Reflective Code Loading
+        Some(ExecAnomaly::Deleted) => out.push("T1070.004"), // File Deletion
+        Some(ExecAnomaly::Hidden) => out.push("T1564.001"), // Hidden Files and Directories
+        Some(ExecAnomaly::TempDir) | None => {}
+    }
+    match probe_kind {
+        ProbeKind::SecretRead => {
+            let path = cstr(&ev.filename[..FILENAME_LEN]);
+            out.push(if path.contains("kubernetes.io/serviceaccount") {
+                "T1528" // Steal Application Access Token
+            } else {
+                "T1552.001" // Credentials In Files
+            });
+        }
+        ProbeKind::Escape => out.push("T1611"), // Escape to Host
+        ProbeKind::Privesc => out.push("T1548.001"), // Setuid and Setgid
+        _ => {}
+    }
+    if mining_signal(ev, probe_kind).is_some() {
+        out.push("T1496"); // Resource Hijacking
+    }
+    out
 }
 
 /// Enqueue a scan for exec/file_write events; never blocks event capture.
@@ -1231,5 +1263,30 @@ mod tests {
         );
         conn.dport = 443;
         assert!(mining_signal(&conn, ProbeKind::Connect).is_none());
+    }
+
+    #[test]
+    fn mitre_techniques() {
+        let fileless = Facts {
+            drift: true,
+            anomaly: Some(ExecAnomaly::Fileless),
+            ..Facts::default()
+        };
+        assert_eq!(
+            mitre(&Event::zeroed(), ProbeKind::Exec, &fileless),
+            ["T1105", "T1620"]
+        );
+        let mut token = Event::zeroed();
+        let path = b"/var/run/secrets/kubernetes.io/serviceaccount/token";
+        token.filename[..path.len()].copy_from_slice(path);
+        assert_eq!(
+            mitre(&token, ProbeKind::SecretRead, &Facts::default()),
+            ["T1528"]
+        );
+        assert_eq!(
+            mitre(&Event::zeroed(), ProbeKind::SecretRead, &Facts::default()),
+            ["T1552.001"]
+        );
+        assert!(mitre(&Event::zeroed(), ProbeKind::Connect, &Facts::default()).is_empty());
     }
 }
