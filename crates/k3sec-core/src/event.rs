@@ -46,7 +46,9 @@ pub enum Source {
 ///
 /// Kubernetes only distinguishes `Normal`/`Warning`; the extra levels exist so
 /// log lines and future eBPF alerts map onto the same scale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Info,

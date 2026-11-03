@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::docker::{notify_new_containers, DockerResolver, Engine, EngineLogSource};
-use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
+use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest, Severity};
 use k3sec_engine::{DetectRules, DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
 use k3sec_k8s::{
@@ -107,6 +107,12 @@ pub struct WatchArgs {
     /// with MITRE ATT&CK ids or drops it. Reloaded when a file changes.
     #[arg(long, value_name = "PATH")]
     pub detect: Option<PathBuf>,
+
+    /// Only print events at least this severe (after --detect, which may
+    /// raise them): `warning` keeps what needs a look, without the stream of
+    /// execs and connects.
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub min_severity: Option<Severity>,
 
     /// The API server's audit log (JSON lines), followed for attacks on the
     /// cluster: exec into a pod, cluster-admin granted, privileged pods,
@@ -302,6 +308,7 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
 
     // Exec events also feed --vulns reachability (best effort, never blocks).
     let exec_tx = vuln_slot.as_ref().map(|(_, _, _, etx)| etx.clone());
+    let min_severity = args.min_severity;
     let printer_handle = tokio::spawn(async move {
         let mut checked = std::time::Instant::now();
         while let Some(event) = rx.recv().await {
@@ -322,6 +329,9 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
                 }
                 None => event,
             };
+            if min_severity.is_some_and(|min| event.severity < min) {
+                continue;
+            }
             printer.emit(&event);
         }
     });
