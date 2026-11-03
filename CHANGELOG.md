@@ -5,6 +5,57 @@ All notable changes to k3sec are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.0]
+
+### Added
+
+- **Red Hat family matched**: RHEL / UBI 8, 9 and 10, Hummingbird and Oracle
+  Linux OS packages are matched against Red Hat's advisories, the product
+  stream taken from the image's `CPE_NAME` (`Red Hat:hummingbird:1`,
+  `Red Hat:enterprise_linux:9::baseos`). RHEL 8/9 ask both `baseos` and
+  `appstream`. Oracle Linux has no feed of its own: it is matched against RHEL,
+  with a warning. Only fixed CVEs (errata) are reported for Red Hat.
+- **rpmdb in `/usr/lib/sysimage/rpm`** (Fedora 36+, RHEL 10, Hummingbird): 0 to
+  11 of 11 Hummingbird images inventoried. Trivy reports no OS on them, grype
+  takes them for Fedora and finds nothing.
+- **Berkeley DB rpmdb** (RHEL / UBI 8, EL7): UBI 8 inventoried, 101 packages
+  as `rpm -qa` lists them.
+- **Wolfi / Chainguard** images matched; **BusyBox** seen (by CPE) in images
+  without a package database, such as the official Prometheus ones.
+- **Java dependencies**: Maven coordinates from `pom.properties` in jars and
+  in the jars a fat jar nests (`BOOT-INF/lib/`, `WEB-INF/lib/`). The jars a
+  JVM holds open are **loaded**. Log4Shell (`CVE-2021-44228`) is reported
+  loaded and KEV on a Spring Boot app; Elasticsearch shows 207 dependencies,
+  Keycloak 417.
+- **`vulns --vex <PATH>`**: OpenVEX statements applied (Docker Hardened
+  Images publish theirs); findings stated `not_affected` or `fixed` are
+  dropped. A DHI image scanned without it carries a warning. `dhi.io/nginx`:
+  33 findings, 17 loaded without; 5, none loaded, with.
+- **CVSS scored locally** from the advisory's v3 vector: on a 9 698-CVE image,
+  unscored CVEs go from 8 723 to 2 069, and the per-CVE lookup budget is kept
+  for the rest.
+- **Exec events without tracefs** (Talos in Docker): a raw tracepoint, the
+  path read from `/proc/<pid>/exe`.
+- **CRI-O and Docker (cri-dockerd)** runtimes in the node stack.
+- **Serverless nodes** (EKS Fargate, virtual kubelet): the DaemonSet's node
+  affinity skips them, and k3sec names them in a warning.
+- **Podman hosts** (`--podman`), rootful, from the container store.
+- **`watch --docker` / `--podman`** takes `--logs` (Docker `json-file`, Podman
+  `k8s-file`) and `--vulns` (new containers; `--rollback` adds running ones).
+
+### Fixed
+
+- **Fixed versions of Red Hat advisories**: an `N:` epoch is now compared
+  first and a missing one counts as 0. `0:2.28-251.el8` was taken as older
+  than `2.28-225.el8`: on UBI 8.8, 11 of 221 findings had a fixed version, now
+  221.
+- **Go binaries over 256 MiB** (Vault, 550 MiB) were skipped: only their
+  `.go.buildinfo` section is read now. Vault: 0 to 496 modules.
+- **Nodes running in a container** (k3d, kind, k3s in Docker): the container
+  is taken from the kernel's cgroup id first, and PIDs are renumbered into
+  k3sec's own namespace, where they were the kernel's and pointed nowhere.
+- **Docker `data-root`** read from `/etc/docker/daemon.json`.
+
 ## [v1.7.0]
 
 ### Added
