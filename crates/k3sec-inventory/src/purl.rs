@@ -50,6 +50,10 @@ pub fn lang(ecosystem: &str, name: &str, version: &str) -> String {
         ),
         "Packagist" => ("composer", split(name)),
         "RubyGems" => ("gem", (None, name.to_string())),
+        "Maven" => match name.split_once(':') {
+            Some((g, a)) => ("maven", (Some(g.to_string()), a.to_string())),
+            None => ("maven", (None, name.to_string())),
+        },
         other => (other, (None, name.to_string())),
     };
     build(ty, ns.as_deref(), &n, version, &[])

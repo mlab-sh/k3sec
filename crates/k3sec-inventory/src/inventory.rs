@@ -79,7 +79,7 @@ pub fn scan_image(
         mapped.iter().map(String::as_str),
     );
 
-    let exes: Vec<String> = pids
+    let mut exes: Vec<String> = pids
         .iter()
         .filter_map(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok())
         .map(|p| {
@@ -88,6 +88,12 @@ pub fn scan_image(
                 .to_string()
         })
         .collect();
+    // An open jar is code the JVM loads from: as loaded as a running binary.
+    exes.extend(
+        pids.iter()
+            .flat_map(|&p| procfs::open_files(p))
+            .filter(|f| lang::is_java_archive(f)),
+    );
     let mut lang = lang::scan(&rootfs, &exes, limits);
     crate::reach::mark_running_binaries(&mut lang, &exes);
     packages.extend(lang);

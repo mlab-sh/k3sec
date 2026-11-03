@@ -2160,6 +2160,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "zip",
 ]
 
 [[package]]

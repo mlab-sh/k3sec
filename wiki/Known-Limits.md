@@ -19,11 +19,13 @@ What k3sec does **not** see yet, and how it shows up.
   the server from source into `/usr/local`: their own CVEs are not matched, only
   those of the libraries they load (lab: httpd 8 loaded packages, none of them
   `httpd`). Go binaries are the exception, through their build info.
+- **Java archives without Maven metadata.** Jars are identified by their
+  `pom.properties`; a hand-built jar (Tomcat's `catalina.jar`) is not.
 - **Python without a lockfile.** Packages installed by `pip` into
   `site-packages` are not inventoried (lab: `python:3.12-slim` shows 0 language
   deps). Only `requirements.txt` `==` pins and `poetry.lock`.
 - **Bounded lockfile search.** Usual app dirs only, depth 6, 50 000 entries,
-  32 MiB per lockfile, 128 Go binaries. `node_modules` is read through its
+  32 MiB per lockfile, 512 Go binaries and Java archives. `node_modules` is read through its
   hidden lockfile only.
 - **rpm**: `rpmdb.sqlite` (EL9+, Fedora, Hummingbird) and the Berkeley DB
   `Packages` (EL7 / EL8), only with `--features rpm`. NDB (SUSE) is not read. Go build info: Go ≥ 1.18.

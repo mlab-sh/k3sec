@@ -81,10 +81,13 @@ whole tree.
 | `composer.lock` | Packagist | `packages` + `packages-dev` |
 | `Gemfile.lock` | RubyGems | top-level `GEM` specs |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |
+| **Java archives** (`.jar`, `.war`) | Maven | `META-INF/maven/<group>/<artifact>/pom.properties`, in the archive and in the jars it nests (`BOOT-INF/lib/`, `WEB-INF/lib/`) |
 
-Lockfiles over 32 MiB are skipped. Go build info is read from the running
-binaries (`/proc/<pid>/exe`) first, then from executables met in the walk, 128
-binaries at most, 256 MiB each.
+Lockfiles over 32 MiB are skipped. Go build info and Java archives are read
+from what runs first (`/proc/<pid>/exe`, and the jars a JVM holds open in
+`/proc/<pid>/fd`, which are therefore **loaded**), then from executables and
+archives met in the walk, 512 at most, 256 MiB each. A jar without
+`pom.properties` is not identified: Tomcat's own `catalina.jar` and the like.
 
 On the lab:
 

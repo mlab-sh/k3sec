@@ -45,6 +45,23 @@ pub fn mapped_files(pid: u32) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// Files `pid` holds open (`/proc/<pid>/fd`), as in-container paths: the jars
+/// a JVM reads classes from are open, not mapped.
+pub fn open_files(pid: u32) -> BTreeSet<String> {
+    let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return BTreeSet::new();
+    };
+    fds.flatten()
+        .filter_map(|fd| fs::read_link(fd.path()).ok())
+        .map(|p| {
+            p.to_string_lossy()
+                .trim_end_matches(" (deleted)")
+                .to_string()
+        })
+        .filter(|p| p.starts_with('/'))
+        .collect()
+}
+
 /// Parse `/proc/<pid>/maps`: the 6th column, file-backed entries only.
 ///
 /// The kernel prints paths relative to the process's own root, so they are

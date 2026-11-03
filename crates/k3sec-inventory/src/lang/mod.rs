@@ -1,7 +1,9 @@
 //! Language dependencies, best effort: a bounded walk of the usual app
-//! directories for lockfiles, plus Go build info from executables.
+//! directories for lockfiles, plus Go build info from executables and Maven
+//! coordinates from Java archives.
 
 pub mod gobuild;
+pub mod jar;
 pub mod lockfiles;
 
 use std::collections::HashSet;
@@ -38,7 +40,7 @@ pub struct LangLimits {
     pub max_entries: usize,
     pub max_lockfile_size: u64,
     pub max_binary_size: u64,
-    /// Executables inspected for Go build info (each is read whole).
+    /// Executables and Java archives inspected (each is read whole).
     pub max_binaries: usize,
 }
 
@@ -49,14 +51,15 @@ impl Default for LangLimits {
             max_entries: 50_000,
             max_lockfile_size: 32 * 1024 * 1024,
             max_binary_size: 256 * 1024 * 1024,
-            max_binaries: 128,
+            // A JVM keeps a few hundred jars open (Elasticsearch: ~250).
+            max_binaries: 512,
         }
     }
 }
 
-/// Collect language deps from lockfiles under [`ROOTS`] and from Go build
-/// info in `executables` (in-container paths, e.g. the running binaries) and
-/// in executables met during the walk.
+/// Collect language deps from lockfiles under [`ROOTS`], from Go build info
+/// and Java archives in `executables` (in-container paths: the running
+/// binaries and the jars processes hold open) and in those met during the walk.
 pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Package> {
     let mut walk = Walk {
         fs,
@@ -105,6 +108,12 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         let Ok(bytes) = read_file_limited(&host, limits.max_binary_size) else {
             continue;
         };
+        if bytes.starts_with(b"PK\x03\x04") {
+            for (name, version) in jar::parse(&bytes) {
+                push("Maven", &name, &version, path);
+            }
+            continue;
+        }
         if !bytes.starts_with(b"\x7fELF") {
             continue;
         }
@@ -118,6 +127,10 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         }
     }
     out
+}
+
+pub fn is_java_archive(path: &str) -> bool {
+    path.ends_with(".jar") || path.ends_with(".war")
 }
 
 struct Walk<'a> {
@@ -162,7 +175,7 @@ impl Walk<'_> {
             } else if meta.is_file() {
                 if let Some(kind) = Lockfile::from_name(&name) {
                     self.lockfiles.push((child, kind));
-                } else if meta.permissions().mode() & 0o111 != 0
+                } else if (is_java_archive(&name) || meta.permissions().mode() & 0o111 != 0)
                     && meta.len() <= self.limits.max_binary_size
                 {
                     self.binaries.push(child);
