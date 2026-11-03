@@ -66,7 +66,7 @@ The same fields as k3sec's NDJSON output, `timestamp` in Unix milliseconds:
 |---|---|---|
 | `source` | `k8s-event` \| `k8s-log` \| `ebpf` \| `yara` \| `vuln` | |
 | `timestamp` | int | Unix ms, UTC |
-| `kind` | text | `exec`, `connect`, `file_write`, `detection`, `vulnerability`, `vuln_summary`, `log`, or a k8s event reason |
+| `kind` | text | eBPF: `exec`, `connect`, `file_write`, `exit`, `secret_read`, `escape`, `privesc`, `listen`, `accept`, `dns`, `udp`; `detection`, `audit`, `vulnerability`, `vuln_summary`, `log`, or a k8s event reason |
 | `severity` | `info` \| `normal` \| `warning` \| `error` \| `critical` | ordered |
 | `namespace` | text? | |
 | `object` | text? | `pod/<name>`, `<pod>/<container>`, ... |
@@ -127,7 +127,7 @@ backlog_events = 50000
 | Field | |
 |---|---|
 | `sources {k8s_events, logs, ebpf, rules, vulns}` | each also needs `allow_<source>`; `rules` needs `ebpf` |
-| `kinds` | eBPF kinds; empty = all |
+| `kinds` | eBPF kinds; empty = all but the opt-in `exit`, `accept`, `udp` |
 | `namespaces` | empty = every allowed namespace; outside `settings.namespaces` is cut |
 | `min_severity` | events below are not sent |
 | `ruleset` | a name from `settings.rulesets` (its last path component, `.yar` dropped) |

@@ -77,7 +77,9 @@ pub fn clamp(settings: &Settings, wanted: &Config) -> (Config, Vec<String>) {
         }
     }
     c.kinds.retain(|k| {
-        let ok = ["exec", "connect", "file_write"].contains(&k.as_str());
+        // Every kind the probe knows: the opt-in ones (exit, accept, udp)
+        // too, which an empty list leaves out.
+        let ok = <k3sec_probe::ProbeKind as clap::ValueEnum>::from_str(k, false).is_ok();
         if !ok {
             cut.push(format!("unknown eBPF kind {k}"));
         }
@@ -159,7 +161,12 @@ mod tests {
                 rules: true,
                 vulns: true,
             },
-            kinds: vec!["exec".into(), "ptrace".into()],
+            kinds: vec![
+                "exec".into(),
+                "ptrace".into(),
+                "secret_read".into(),
+                "udp".into(),
+            ],
             namespaces: vec!["prod".into(), "kube-system".into()],
             min_severity: Severity::Warning,
             ruleset: None,
@@ -168,7 +175,7 @@ mod tests {
         let (c, cut) = clamp(&settings(), &wanted);
         assert!(!c.sources.logs);
         assert_eq!(c.namespaces, ["prod"]);
-        assert_eq!(c.kinds, ["exec"]);
+        assert_eq!(c.kinds, ["exec", "secret_read", "udp"]);
         assert!(c.rules_source.is_none());
         assert_eq!(c.ruleset.as_deref(), Some("rules"), "single ruleset picked");
         assert!(c.sources.rules);
