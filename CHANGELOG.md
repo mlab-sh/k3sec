@@ -98,9 +98,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attach or port-forward into a pod, secrets listed, tokens minted, a service
   account probing its permissions, events deleted. On the wire to mlab.sh they
   are `k8s-event`s with `kind: "audit"`.
+- **`watch --min-severity <LEVEL>`**: only events at least this severe are
+  printed, after `--detect` (which may raise them).
+- **Less noise**: a `connect`, `udp` or `dns` destination is reported once per
+  5 minutes per container; the next report carries `repeats`, how many were
+  held back. 50 connects to one address give 1 event.
+- **Host processes filtered in the kernel** (cgroup v2): once userspace has
+  seen a host cgroup, the kernel drops its events itself. 2 000 execs from a
+  host shell give 7 records instead of 2 000.
 
 ### Fixed
 
+- **eBPF events lost under load**: every `open()` on the host took a ring
+  buffer slot before its path was checked. A burst of 2 000 execs in a pod
+  gave 757 events, and an idle node dropped about 1 000 records every 30 s.
+  Paths are now checked first and the ring is 2 MiB: 2 000 of 2 000, no drop.
 - **Fixed versions of Red Hat advisories**: an `N:` epoch is now compared
   first and a missing one counts as 0. `0:2.28-251.el8` was taken as older
   than `2.28-225.el8`: on UBI 8.8, 11 of 221 findings had a fixed version, now
