@@ -43,6 +43,7 @@ url = "https://github.com/mlab-sh/k3sec"
 assets = [
     { source = "target/release/k3sec", dest = "/usr/bin/k3sec", mode = "755" },
     { source = "../../rules/k3sec_test_marker.yar", dest = "/usr/share/k3sec/rules/k3sec_test_marker.yar", mode = "644" },
+    { source = "../../rules/cryptominer.yar", dest = "/usr/share/k3sec/rules/cryptominer.yar", mode = "644" },
     { source = "../../rules/meterpreter.yar", dest = "/usr/share/k3sec/rules/meterpreter.yar", mode = "644" },
     { source = "../../rules/packed_elf_dropper.yar", dest = "/usr/share/k3sec/rules/packed_elf_dropper.yar", mode = "644" },
     { source = "../../rules/reverse_shell.yar", dest = "/usr/share/k3sec/rules/reverse_shell.yar", mode = "644" },

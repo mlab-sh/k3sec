@@ -31,6 +31,7 @@ set in `rules/`:
 |------|------|
 | `reverse_shell.yar` | `reverse_shell_indicators`: `bash -i`, `/dev/tcp/`, `pty.spawn`, `nc -e`, `mkfifo /tmp/` |
 | `meterpreter.yar` | `meterpreter_payload`: strings of Metasploit Meterpreter payloads |
+| `cryptominer.yar` | `cryptominer_indicators`: `stratum+tcp://`, `stratum+ssl://`, or two of XMRig's options and algorithms (`--donate-level`, `RandomX`, `cryptonight`) |
 | `packed_elf_dropper.yar` | `packed_elf_dropper`: UPX-packed ELF, common for dropped payloads |
 | `k3sec_test_marker.yar` | `k3sec_test_marker`: the string `K3SEC_YARA_TEST`, to prove the exec / file scan pipeline end to end |
 

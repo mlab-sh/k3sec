@@ -454,6 +454,11 @@ fn build_event(
         ),
     };
 
+    // Mining raises the event: its kind stays, the reason goes in front.
+    let (severity, message) = match mining_signal(ev, probe_kind) {
+        Some((why, sev)) => (severity.max(sev), format!("cryptominer ({why}): {message}")),
+        None => (severity, message),
+    };
     let mut builder = SecEvent::builder(Source::Ebpf, at)
         .kind(kind_str)
         .severity(severity)
@@ -467,6 +472,9 @@ fn build_event(
     }
     if let Some(a) = facts.anomaly {
         builder = builder.meta("exec_anomaly", a.as_str());
+    }
+    if let Some((why, _)) = mining_signal(ev, probe_kind) {
+        builder = builder.meta("cryptominer", why);
     }
     if let Some((ppid, _)) = facts.ancestors.first() {
         let chain: Vec<&str> = facts
@@ -556,6 +564,76 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// Mining pools' domains (a name, or any subdomain of one).
+const MINING_POOLS: &[&str] = &[
+    "supportxmr.com",
+    "nanopool.org",
+    "moneroocean.stream",
+    "c3pool.com",
+    "2miners.com",
+    "f2pool.com",
+    "herominers.com",
+    "hashvault.pro",
+    "unmineable.com",
+    "minexmr.com",
+    "xmrpool.eu",
+    "nicehash.com",
+    "ethermine.org",
+    "flypool.org",
+    "minergate.com",
+    "kryptex.network",
+    "zpool.ca",
+    "prohashing.com",
+];
+
+/// Miners' binary names.
+const MINERS: &[&str] = &[
+    "xmrig",
+    "xmr-stak",
+    "minerd",
+    "cpuminer",
+    "cgminer",
+    "bfgminer",
+    "t-rex",
+    "nbminer",
+    "lolminer",
+    "ethminer",
+    "phoenixminer",
+    "teamredminer",
+    "gminer",
+    "srbminer",
+];
+
+/// Ports stratum pools usually listen on.
+const STRATUM_PORTS: &[u16] = &[3333, 4444, 5555, 7777, 9999, 14433, 14444, 45560, 45700];
+
+/// Why `ev` looks like mining, and how sure that is.
+fn mining_signal(ev: &Event, kind: ProbeKind) -> Option<(&'static str, Severity)> {
+    match kind {
+        ProbeKind::Dns => {
+            let name = dns_name(&ev.filename)?;
+            let name = name.trim_end_matches('…').to_ascii_lowercase();
+            MINING_POOLS
+                .iter()
+                .any(|p| name == *p || name.ends_with(&format!(".{p}")))
+                .then_some(("a mining pool's domain", Severity::Critical))
+        }
+        ProbeKind::Exec => {
+            let path = cstr(&ev.filename[..FILENAME_LEN]);
+            let base = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            let comm = cstr(&ev.comm[..COMM_LEN]).to_ascii_lowercase();
+            MINERS
+                .iter()
+                .any(|m| base.starts_with(m) || comm.starts_with(m))
+                .then_some(("a miner's binary", Severity::Critical))
+        }
+        ProbeKind::Connect => STRATUM_PORTS
+            .contains(&ev.dport)
+            .then_some(("a stratum port", Severity::Warning)),
+        _ => None,
+    }
 }
 
 /// The name a DNS question asks: length-prefixed labels up to a zero. A name
@@ -1115,5 +1193,31 @@ mod tests {
             Some("example.org…"),
             "cut mid-label"
         );
+    }
+
+    #[test]
+    fn mining_signals() {
+        let mut dns = Event::zeroed();
+        dns.filename[..21].copy_from_slice(b"\x04pool\x0asupportxmr\x03com\x00");
+        assert_eq!(
+            mining_signal(&dns, ProbeKind::Dns).map(|s| s.1),
+            Some(Severity::Critical)
+        );
+        let mut ok = Event::zeroed();
+        ok.filename[..13].copy_from_slice(b"\x07example\x03com\x00");
+        assert!(mining_signal(&ok, ProbeKind::Dns).is_none());
+
+        let mut exec = Event::zeroed();
+        exec.filename[..14].copy_from_slice(b"/tmp/xmrig-6.2");
+        assert!(mining_signal(&exec, ProbeKind::Exec).is_some());
+
+        let mut conn = Event::zeroed();
+        conn.dport = 3333;
+        assert_eq!(
+            mining_signal(&conn, ProbeKind::Connect).map(|s| s.1),
+            Some(Severity::Warning)
+        );
+        conn.dport = 443;
+        assert!(mining_signal(&conn, ProbeKind::Connect).is_none());
     }
 }
