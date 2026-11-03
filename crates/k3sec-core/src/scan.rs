@@ -21,6 +21,9 @@ pub enum ScanTrigger {
     Exec,
     /// A write to a sensitive file, scan the file after it settles.
     FileWrite,
+    /// A suspicious exec (fileless, deleted, drift): scan the process's
+    /// memory not backed by a regular file, after it settles.
+    Memory,
 }
 
 impl ScanTrigger {
@@ -28,6 +31,7 @@ impl ScanTrigger {
         match self {
             ScanTrigger::Exec => "exec",
             ScanTrigger::FileWrite => "file_write",
+            ScanTrigger::Memory => "memory",
         }
     }
 }

@@ -348,6 +348,18 @@ fn build_event(
     // Fire off a scan request (best-effort, non-blocking) for scannable kinds.
     if let Some(scan_tx) = scan_tx {
         maybe_request_scan(scan_tx, ev, probe_kind, &comm, container_id, info.as_ref());
+        // A suspicious exec: its memory too (fileless code is in no file).
+        if facts.drift || facts.anomaly.is_some() {
+            let req = ScanRequest {
+                trigger: ScanTrigger::Memory,
+                pid: ev.pid,
+                path: Some(cstr(&ev.filename[..FILENAME_LEN])),
+                container_id: Some(container_id.to_string()),
+                container: info.clone(),
+                comm: comm.clone(),
+            };
+            let _ = scan_tx.try_send(req);
+        }
     }
 
     let (kind_str, severity, message) = match probe_kind {

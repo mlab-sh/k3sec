@@ -10,6 +10,13 @@ surfaces, with [yara-x](https://github.com/VirusTotal/yara-x):
   execs of a marked binary detected.
 - **file_write**: the file dropped under a sensitive path, debounced (500 ms of
   quiet) so a file being written is scanned once, settled.
+- **memory**: after a suspicious exec (fileless, deleted binary, drift), once
+  settled: the process's executable anonymous memory and everything a memfd or
+  a deleted file backs, read through `/proc/<pid>/mem` up to
+  `--max-scan-size`. Code unpacked or injected at runtime is in no file; on the
+  lab, a marker built at runtime in an anonymous `rwx` mapping of a fileless
+  process is matched "on the memory of pid N (6 regions)". Not done on every
+  exec: JIT runtimes (Node.js, Java) map large anonymous code.
 
 ```bash
 sudo k3sec watch --ebpf --rules ./rules/

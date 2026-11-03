@@ -143,7 +143,7 @@ impl DetectionEngine {
                                 break;
                             }
                         }
-                        ScanTrigger::FileWrite => {
+                        ScanTrigger::FileWrite | ScanTrigger::Memory => {
                             pending.insert(debounce_key(&req), (Instant::now(), req));
                         }
                     },
@@ -193,6 +193,31 @@ fn worker_loop(
     let mut scanner = Scanner::new(&rules);
 
     while let Ok(req) = rx.recv() {
+        if req.trigger == ScanTrigger::Memory {
+            match read_memory(req.pid, max_scan_size) {
+                Ok((bytes, regions)) if !bytes.is_empty() => {
+                    stats.scanned.fetch_add(1, Ordering::Relaxed);
+                    let hits = scan_bytes(&mut scanner, &bytes);
+                    if hits.is_empty() {
+                        stats.clean.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        stats.hits.fetch_add(1, Ordering::Relaxed);
+                        let shown = format!("the memory of pid {} ({regions} regions)", req.pid);
+                        if sink
+                            .blocking_send(detection_event(&hits, &req, &shown))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    stats.gone.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            continue;
+        }
         let Some(mut artifact) = artifact_path(&req) else {
             continue;
         };
@@ -298,7 +323,57 @@ fn artifact_path(req: &ScanRequest) -> Option<PathBuf> {
             let rel = path.trim_start_matches('/');
             Some(PathBuf::from(format!("/proc/{}/root/{rel}", req.pid)))
         }
+        ScanTrigger::Memory => None,
     }
+}
+
+/// The regions of `maps` worth a memory scan: executable anonymous memory
+/// (JIT, injected or unpacked code) and anything a memfd or a deleted file
+/// backs (a fileless binary's code and data). `(start, end)`.
+fn memory_regions(maps: &str) -> Vec<(u64, u64)> {
+    maps.lines()
+        .filter_map(|line| {
+            let mut f = line.splitn(6, ' ');
+            let (range, perms) = (f.next()?, f.next()?);
+            let path = f.nth(3).map(str::trim_start).unwrap_or("");
+            let fileless = path.starts_with("/memfd:") || path.ends_with(" (deleted)");
+            let anon_exec = perms.contains('x')
+                && (path.is_empty()
+                    || (path.starts_with('[')
+                        && !matches!(path, "[vdso]" | "[vsyscall]" | "[vvar]")));
+            if !(fileless || anon_exec) || !perms.starts_with('r') {
+                return None;
+            }
+            let (a, b) = range.split_once('-')?;
+            Some((
+                u64::from_str_radix(a, 16).ok()?,
+                u64::from_str_radix(b, 16).ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Those regions' bytes, `max` in all, and how many regions were read.
+fn read_memory(pid: u32, max: u64) -> std::io::Result<(Vec<u8>, usize)> {
+    use std::os::unix::fs::FileExt;
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps"))?;
+    let mem = File::open(format!("/proc/{pid}/mem"))?;
+    let (mut out, mut read) = (Vec::new(), 0);
+    for (start, end) in memory_regions(&maps) {
+        let room = max.saturating_sub(out.len() as u64);
+        let len = (end - start).min(room) as usize;
+        if len == 0 {
+            break;
+        }
+        let mut buf = vec![0u8; len];
+        // A region unmapped meanwhile, or a guard page: skipped.
+        if let Ok(n) = mem.read_at(&mut buf, start) {
+            buf.truncate(n);
+            out.extend_from_slice(&buf);
+            read += 1;
+        }
+    }
+    Ok((out, read))
 }
 
 /// Read up to `max` bytes; `Ok(None)` if the artifact exceeds the cap.
@@ -324,7 +399,11 @@ fn debounce_key(req: &ScanRequest) -> String {
         .as_ref()
         .map(|c| format!("{}/{}", c.namespace, c.pod))
         .unwrap_or_else(|| format!("pid{}", req.pid));
-    format!("{scope}:{}", req.path.as_deref().unwrap_or(""))
+    let what = match req.trigger {
+        ScanTrigger::Memory => format!("mem:{}", req.pid),
+        _ => req.path.clone().unwrap_or_default(),
+    };
+    format!("{scope}:{what}")
 }
 
 fn report_stats(stats: &ScanStats) {
@@ -416,5 +495,33 @@ mod tests {
     fn read_capped_missing_file_is_not_found() {
         let err = read_capped(Path::new("/proc/nonexistent-pid-999999/exe"), 1024).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn memory_regions_are_fileless_or_anonymous_code() {
+        let maps = "\
+55d0c0000000-55d0c0021000 r-xp 00000000 08:01 123 /usr/bin/python3.12
+7f0000000000-7f0000001000 r-xp 00000000 00:01 9 /memfd:payload (deleted)
+7f0000001000-7f0000002000 r--p 00001000 00:01 9 /memfd:payload (deleted)
+7f0000100000-7f0000110000 rwxp 00000000 00:00 0
+7f0000200000-7f0000210000 rw-p 00000000 00:00 0
+7ffd00000000-7ffd00002000 r-xp 00000000 00:00 0                          [vdso]
+7f0000300000-7f0000301000 ---p 00000000 00:00 0
+";
+        assert_eq!(
+            memory_regions(maps),
+            [
+                (0x7f0000000000, 0x7f0000001000),
+                (0x7f0000001000, 0x7f0000002000),
+                (0x7f0000100000, 0x7f0000110000)
+            ]
+        );
+    }
+
+    #[test]
+    fn own_memory_is_readable() {
+        let (bytes, regions) = read_memory(std::process::id(), 1 << 20).unwrap();
+        assert!(bytes.len() <= 1 << 20);
+        let _ = regions; // a test binary may map no anonymous code at all
     }
 }
