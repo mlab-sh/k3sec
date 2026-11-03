@@ -51,7 +51,7 @@ and cgroups and talks to the standard Kubernetes API.
 | Vanilla Kubernetes (kubeadm, kind) | Tested: `inventory`, `vulns`, `watch` |
 | Talos | Tested: `inventory`, `vulns`, `watch` |
 | EKS, GKE, AKS | Expected to work, not tested. Fargate and virtual-kubelet nodes are skipped and named in a warning; GKE Autopilot refuses `hostPID` |
-| Docker host, no cluster (`--docker`) | Tested: `inventory`, `vulns`, `watch --ebpf` |
+| Docker or Podman host, no cluster (`--docker`, `--podman`) | Tested: `inventory`, `vulns`, `watch --ebpf` |
 | CRI-O / cri-dockerd nodes | Containers, events and runtime version matching; not tested on a live node |
 
 Details on the [wiki home](https://github.com/mlab-sh/k3sec/wiki#cluster-compatibility).
@@ -168,11 +168,12 @@ sudo k3sec watch --vulns                 # vulnerability events for new pods
 ```
 
 No cluster? `--docker` reads the containers of the local Docker daemon instead
-(`/var/lib/docker`, or `$DOCKER_DATA_ROOT`):
+(its `data-root`), `--podman` those of rootful Podman:
 
 ```bash
 sudo k3sec vulns --docker                # CVEs of the running Docker containers
 sudo k3sec watch --docker --ebpf         # exec, connect, file writes per container
+sudo k3sec inventory --podman            # what runs under Podman
 ```
 
 Diagnostics go to **stderr** (`RUST_LOG=k3sec=debug`), output to **stdout**,

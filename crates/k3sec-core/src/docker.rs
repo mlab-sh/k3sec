@@ -1,9 +1,16 @@
-//! Plain Docker hosts (no Kubernetes): the running containers, read from the
-//! daemon's state files (`<data-root>/containers/<id>/config.v2.json`) rather
-//! than its socket, so no HTTP client and no daemon round trip. Needs root,
-//! like the rest of the node inventory.
+//! Container hosts without Kubernetes: the containers of the local Docker or
+//! Podman, read from the engine's state files rather than its socket, so no
+//! HTTP client and no daemon round trip. Needs root, like the rest of the
+//! node inventory.
 //!
-//! A container shows as namespace `docker`, pod and container both its name.
+//! * Docker: `<data-root>/containers/<id>/config.v2.json`.
+//! * Podman (rootful): `/var/lib/containers/storage/<driver>-containers/containers.json`,
+//!   which lists stopped containers too: those have no process and are skipped
+//!   by the inventory like any container without one.
+//!
+//! nerdctl keeps its containers in containerd's bolt metadata: not read.
+//!
+//! A container shows as namespace `docker` / `podman`, pod and container both its name.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,12 +23,69 @@ use crate::{ContainerInfo, ContainerResolver, PodContainer};
 
 /// The namespace Docker containers are shown under.
 pub const NAMESPACE: &str = "docker";
+/// The namespace Podman containers are shown under.
+pub const PODMAN_NAMESPACE: &str = "podman";
 
-/// Docker's default `data-root`.
-// shortcut: a custom `data-root` in daemon.json is not read, set $DOCKER_DATA_ROOT
-pub fn data_root() -> PathBuf {
-    std::env::var_os("DOCKER_DATA_ROOT")
-        .map(PathBuf::from)
+/// A container engine and where its state lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Engine {
+    Docker(PathBuf),
+    Podman(PathBuf),
+}
+
+impl Engine {
+    /// Docker: `$DOCKER_DATA_ROOT`, else `data-root` from `/etc/docker/daemon.json`,
+    /// else `/var/lib/docker`.
+    pub fn docker() -> Self {
+        Engine::Docker(data_root(Path::new("/etc/docker/daemon.json")))
+    }
+
+    /// Rootful Podman: `$CONTAINERS_STORAGE_ROOT`, else `/var/lib/containers/storage`.
+    pub fn podman() -> Self {
+        Engine::Podman(
+            std::env::var_os("CONTAINERS_STORAGE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/containers/storage")),
+        )
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Engine::Docker(_) => NAMESPACE,
+            Engine::Podman(_) => PODMAN_NAMESPACE,
+        }
+    }
+
+    /// The engine's containers (Docker: running only; Podman: all).
+    pub fn list(&self) -> Result<Vec<PodContainer>> {
+        match self {
+            Engine::Docker(root) => list_containers(root),
+            Engine::Podman(root) => list_podman(root),
+        }
+    }
+
+    fn lookup(&self, id: &str) -> Option<PodContainer> {
+        match self {
+            Engine::Docker(root) => {
+                read_config(&root.join("containers").join(id).join("config.v2.json"))
+                    .map(to_pod_container)
+            }
+            Engine::Podman(root) => list_podman(root)
+                .ok()?
+                .into_iter()
+                .find(|c| c.container_id == id),
+        }
+    }
+}
+
+fn data_root(daemon_json: &Path) -> PathBuf {
+    if let Some(root) = std::env::var_os("DOCKER_DATA_ROOT") {
+        return PathBuf::from(root);
+    }
+    std::fs::read(daemon_json)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("data-root")?.as_str().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/var/lib/docker"))
 }
 
@@ -80,28 +144,70 @@ pub fn list_containers(root: &Path) -> Result<Vec<PodContainer>> {
         .collect())
 }
 
-/// Container id → name, read from the state file on first sight of an id.
+#[derive(Deserialize)]
+struct PodmanContainer {
+    id: String,
+    #[serde(default)]
+    names: Vec<String>,
+    /// Image id (hex, no `sha256:`).
+    #[serde(default)]
+    image: String,
+    /// A JSON document in a string: `{"image-name": "docker.io/library/nginx:1.27", ...}`.
+    #[serde(default)]
+    metadata: String,
+}
+
+/// Every container of the Podman store in `root`, whatever its storage driver.
+pub fn list_podman(root: &Path) -> Result<Vec<PodContainer>> {
+    let entries = std::fs::read_dir(root)
+        .with_context(|| format!("cannot read {} (Podman installed? root?)", root.display()))?;
+    let mut out = Vec::new();
+    for dir in entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with("-containers"))
+    {
+        let Ok(bytes) = std::fs::read(dir.path().join("containers.json")) else {
+            continue;
+        };
+        let Ok(list) = serde_json::from_slice::<Vec<PodmanContainer>>(&bytes) else {
+            continue;
+        };
+        out.extend(list.into_iter().map(|c| {
+            let meta: serde_json::Value = serde_json::from_str(&c.metadata).unwrap_or_default();
+            let name = c
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| c.id[..12.min(c.id.len())].into());
+            PodContainer {
+                namespace: PODMAN_NAMESPACE.into(),
+                pod: name.clone(),
+                container: name,
+                image: meta
+                    .get("image-name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&c.image)
+                    .to_string(),
+                image_digest: (!c.image.is_empty()).then(|| format!("sha256:{}", c.image)),
+                container_id: c.id.to_ascii_lowercase(),
+            }
+        }));
+    }
+    Ok(out)
+}
+
+/// Container id → name, read from the engine's state on first sight of an id.
 pub struct DockerResolver {
-    root: PathBuf,
+    engine: Engine,
     cache: Mutex<HashMap<String, Option<ContainerInfo>>>,
 }
 
 impl DockerResolver {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(engine: Engine) -> Self {
         Self {
-            root,
+            engine,
             cache: Mutex::default(),
         }
-    }
-
-    fn lookup(&self, id: &str) -> Option<ContainerInfo> {
-        let c = read_config(&self.root.join("containers").join(id).join("config.v2.json"))?;
-        let c = to_pod_container(c);
-        Some(ContainerInfo {
-            namespace: c.namespace,
-            pod: c.pod,
-            container: c.container,
-        })
     }
 }
 
@@ -112,9 +218,13 @@ impl ContainerResolver for DockerResolver {
         if let Some(hit) = cache.get(container_id) {
             return hit.clone();
         }
-        // A miss is remembered too: ids of nested runtimes (kind, k3d) are never Docker's.
+        // A miss is remembered too: ids of nested runtimes (kind, k3d) are never the engine's.
         // shortcut: unbounded, one entry per container id seen; fine for a host's lifetime of containers
-        let info = self.lookup(container_id);
+        let info = self.engine.lookup(container_id).map(|c| ContainerInfo {
+            namespace: c.namespace,
+            pod: c.pod,
+            container: c.container,
+        });
         cache.insert(container_id.to_string(), info.clone());
         info
     }
@@ -156,7 +266,7 @@ mod tests {
             }]
         );
 
-        let r = DockerResolver::new(tmp.clone());
+        let r = DockerResolver::new(Engine::Docker(tmp.clone()));
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -165,6 +275,53 @@ mod tests {
             Some("web".into())
         );
         assert_eq!(rt.block_on(r.by_container_id(&"f".repeat(64))), None);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn podman_store_and_docker_data_root() {
+        let tmp = std::env::temp_dir().join(format!("k3sec-podman-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("overlay-containers")).unwrap();
+        std::fs::write(
+            tmp.join("overlay-containers/containers.json"),
+            format!(
+                r#"[{{"id":"{RUNNING}","names":["web"],"image":"1e5f3c5b",
+                     "metadata":"{{\"image-name\":\"docker.io/library/nginx:1.27\",\"name\":\"web\"}}"}}]"#
+            ),
+        )
+        .unwrap();
+        let podman = Engine::Podman(tmp.clone());
+        let got = podman.list().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (
+                got[0].namespace.as_str(),
+                got[0].pod.as_str(),
+                got[0].image.as_str()
+            ),
+            ("podman", "web", "docker.io/library/nginx:1.27")
+        );
+        assert_eq!(got[0].image_digest.as_deref(), Some("sha256:1e5f3c5b"));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let r = DockerResolver::new(podman);
+        assert_eq!(
+            rt.block_on(r.by_container_id(RUNNING)).map(|i| i.namespace),
+            Some("podman".into())
+        );
+
+        std::fs::write(tmp.join("daemon.json"), r#"{"data-root": "/srv/docker"}"#).unwrap();
+        if std::env::var_os("DOCKER_DATA_ROOT").is_none() {
+            assert_eq!(
+                data_root(&tmp.join("daemon.json")),
+                PathBuf::from("/srv/docker")
+            );
+            assert_eq!(
+                data_root(&tmp.join("missing.json")),
+                PathBuf::from("/var/lib/docker")
+            );
+        }
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

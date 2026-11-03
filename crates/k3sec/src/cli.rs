@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use k3sec_core::docker::{self, DockerResolver};
+use k3sec_core::docker::{DockerResolver, Engine};
 use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
 use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
@@ -29,10 +29,15 @@ pub struct Cli {
     pub kubeconfig: Option<PathBuf>,
 
     /// A plain Docker host, no cluster: containers from the Docker daemon's
-    /// state ($DOCKER_DATA_ROOT, default /var/lib/docker). `watch` then
-    /// streams eBPF events only.
-    #[arg(long, global = true)]
+    /// state ($DOCKER_DATA_ROOT, else `data-root` of /etc/docker/daemon.json,
+    /// else /var/lib/docker).
+    #[arg(long, global = true, conflicts_with = "podman")]
     pub docker: bool,
+
+    /// A plain Podman host (rootful), no cluster: containers from its store
+    /// ($CONTAINERS_STORAGE_ROOT, else /var/lib/containers/storage).
+    #[arg(long, global = true)]
+    pub podman: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -112,20 +117,28 @@ pub struct WatchArgs {
 
 /// Entry point invoked by `main` after CLI parsing.
 pub async fn run(cli: Cli) -> Result<()> {
+    let engine = if cli.docker {
+        Some(Engine::docker())
+    } else {
+        cli.podman.then(Engine::podman)
+    };
     match cli.command {
-        Command::Watch(args) => watch(cli.kubeconfig, cli.docker, args).await,
-        Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, cli.docker, args).await,
-        Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, cli.docker, args).await,
+        Command::Watch(args) => watch(cli.kubeconfig, engine, args).await,
+        Command::Inventory(args) => crate::vulns::inventory(cli.kubeconfig, engine, args).await,
+        Command::Vulns(args) => crate::vulns::vulns(cli.kubeconfig, engine, args).await,
         Command::Serve => k3sec_agent::serve().await,
     }
 }
 
-async fn watch(kubeconfig: Option<PathBuf>, docker: bool, args: WatchArgs) -> Result<()> {
-    if docker {
-        anyhow::ensure!(args.ebpf, "--docker watches eBPF events only: add --ebpf");
+async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchArgs) -> Result<()> {
+    if engine.is_some() {
+        anyhow::ensure!(
+            args.ebpf,
+            "--docker / --podman watch eBPF events only: add --ebpf"
+        );
         anyhow::ensure!(
             !args.logs && !args.vulns && !args.rollback,
-            "--logs, --vulns and --rollback need a cluster, not --docker"
+            "--logs, --vulns and --rollback need a cluster, not --docker / --podman"
         );
     }
     if !args.kind.is_empty() && !args.ebpf {
@@ -166,8 +179,8 @@ async fn watch(kubeconfig: Option<PathBuf>, docker: bool, args: WatchArgs) -> Re
 
     let mut sources: Vec<Box<dyn EventSource>> = Vec::new();
     let mut vuln_slot = None;
-    if docker {
-        let resolver = Arc::new(DockerResolver::new(docker::data_root()));
+    if let Some(engine) = &engine {
+        let resolver = Arc::new(DockerResolver::new(engine.clone()));
         let config = ProbeConfig {
             kinds: KindFilter::new(args.kind.clone()),
         };
@@ -232,7 +245,7 @@ async fn watch(kubeconfig: Option<PathBuf>, docker: bool, args: WatchArgs) -> Re
         rollback = args.rollback,
         output = ?args.output,
         sources = sources.len(),
-        docker,
+        engine = engine.as_ref().map_or("kubernetes", Engine::name),
         "starting watch",
     );
 

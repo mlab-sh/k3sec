@@ -8,7 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 
-use k3sec_core::{docker, NodeVersions, OutputFormat, PodContainer};
+use k3sec_core::docker::Engine;
+use k3sec_core::{NodeVersions, OutputFormat, PodContainer};
 use k3sec_inventory::render::{self, Filter};
 use k3sec_inventory::vex::{is_hardened_image, Vex};
 use k3sec_inventory::{
@@ -108,10 +109,10 @@ pub struct VulnsArgs {
 
 pub async fn inventory(
     kubeconfig: Option<PathBuf>,
-    docker: bool,
+    engine: Option<Engine>,
     args: InventoryArgs,
 ) -> Result<()> {
-    let (node, images) = collect(kubeconfig, docker, &args.scope).await?;
+    let (node, images) = collect(kubeconfig, engine.as_ref(), &args.scope).await?;
     if let Some(dir) = &args.sbom {
         for inv in images.iter().filter(|i| !i.containers.is_empty()) {
             let path = k3sec_inventory::sbom::write(dir, inv)?;
@@ -127,10 +128,14 @@ pub async fn inventory(
     print(&out)
 }
 
-pub async fn vulns(kubeconfig: Option<PathBuf>, docker: bool, args: VulnsArgs) -> Result<()> {
+pub async fn vulns(
+    kubeconfig: Option<PathBuf>,
+    engine: Option<Engine>,
+    args: VulnsArgs,
+) -> Result<()> {
     let client = args.mlab.client()?;
     let vex = args.vex.as_deref().map(Vex::load).transpose()?;
-    let (node, mut images) = collect(kubeconfig, docker, &args.scope).await?;
+    let (node, mut images) = collect(kubeconfig, engine.as_ref(), &args.scope).await?;
     if let Some(n) = &node {
         images.push(node_inventory(n, args.scope.match_kernel));
     }
@@ -170,14 +175,14 @@ pub async fn vulns(kubeconfig: Option<PathBuf>, docker: bool, args: VulnsArgs) -
 /// List this node's containers, then inventory each image once.
 async fn collect(
     kubeconfig: Option<PathBuf>,
-    docker: bool,
+    engine: Option<&Engine>,
     scope: &ScopeArgs,
 ) -> Result<(Option<NodeVersions>, Vec<ImageInventory>)> {
     // Local and cheap: fail on missing privileges before touching the cluster.
     check_root_access()?;
-    // A Docker host has no node stack to match (kubelet, containerd version).
-    let (node, containers) = if docker {
-        (None, docker::list_containers(&docker::data_root())?)
+    // A Docker / Podman host has no node stack to match (kubelet, containerd version).
+    let (node, containers) = if let Some(engine) = engine {
+        (None, engine.list()?)
     } else {
         cluster_containers(kubeconfig, scope).await?
     };
