@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Podman hosts** (`--podman`), rootful, from the container store.
 - **`watch --docker` / `--podman`** takes `--logs` (Docker `json-file`, Podman
   `k8s-file`) and `--vulns` (new containers; `--rollback` adds running ones).
+- **Runtimes built from source**: Python, Node.js, PHP, Ruby, Perl, Apache
+  httpd and Redis in `/usr/local`, the JDK (`release` file) and the Go
+  toolchain, as the official images ship them, are matched by CPE (Go as
+  `stdlib`) and tagged loaded when running or mapped: 18 of 45 audited images
+  had their interpreter invisible.
+- **Python distributions** from `dist-info` / `egg-info` (Home Assistant:
+  1 641, as syft); a mapped C extension makes one loaded.
+- **`node_modules` without a hidden lockfile** read module by module (Ghost:
+  2 301), and the working directory of every container process is walked
+  (`/var/lib/ghost`, `/usr/src/redmine`).
+- **Rust crates** of `cargo auditable` binaries (`.dep-v0` section).
+- **Java without `pom.properties`**: named from the manifest and file name,
+  matched when the group is known (Spring, Ant, Groovy, Lucene…); Jenkins
+  plugins (`.hpi`, `.jpi`); two nesting levels. A Spring Boot app now shows
+  Spring4Shell (`CVE-2022-22965`, KEV).
+- **Go and Rust binaries on the PATH** read even when not running.
+- **Installed gems** from their gemspecs (`ruby:3.3`: 86, as syft); a
+  `Gemfile.lock` is trimmed to what is installed, gem platforms dropped.
+- **openSUSE / SLES** NDB rpmdb; openSUSE Leap and Tumbleweed matched.
+- **Arch Linux** packages (pacman), listed and tagged.
+- **.NET** `deps.json` (the runtimes themselves as NuGet runtime packs),
+  **PEAR** packages (as `pear/<name>` on Packagist), the **WordPress** core
+  (CPE) and its plugins, **Bitnami** components from their SPDX SBOMs.
 
 ### Fixed
 
@@ -55,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is taken from the kernel's cgroup id first, and PIDs are renumbered into
   k3sec's own namespace, where they were the kernel's and pointed nowhere.
 - **Docker `data-root`** read from `/etc/docker/daemon.json`.
+- **Kernel header packages** (`linux-libc-dev`, `linux-headers`,
+  `kernel-headers`) are no longer matched: they carried every kernel CVE for a
+  kernel that does not run (golang:1.23: 7 126 findings, 1 075 now). On the
+  45-image audit: 37 388 findings, 17 192 now; loaded ones 2 968 → 3 266.
+- **Lockfiles that describe no installed software** are skipped: inside an
+  installed gem, `testdata`, the Go toolchain's own sources.
 
 ## [v1.7.0]
 
