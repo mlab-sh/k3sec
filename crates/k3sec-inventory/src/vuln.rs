@@ -616,9 +616,19 @@ fn fixed_version(adv: &Advisory, coord: &Coordinate, installed: &str) -> Option<
 
 /// Loose version ordering across ecosystems: digit runs compare numerically,
 /// letter runs lexically, `~` (dpkg pre-release) sorts lowest, even below the
-/// end of the string. Good enough to pick the right range: the source has
-/// already decided what is affected.
+/// end of the string. An `N:` epoch (dpkg, rpm) compares first and defaults
+/// to 0: Red Hat writes `0:2.28-251.el8` where the rpmdb says `2.28-225.el8`.
+/// Good enough to pick the right range: the source has already decided what
+/// is affected.
 pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    fn epoch(s: &str) -> (u64, &str) {
+        match s.split_once(':') {
+            Some((e, rest)) if !e.is_empty() && e.bytes().all(|b| b.is_ascii_digit()) => {
+                (e.parse().unwrap_or(u64::MAX), rest)
+            }
+            _ => (0, s),
+        }
+    }
     fn tokens(s: &str) -> Vec<(u8, u64, String)> {
         let mut out = Vec::new();
         let mut chars = s.trim_start_matches('v').chars().peekable();
@@ -647,7 +657,8 @@ pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         out.push((1, 0, String::new())); // end: above `~`, below anything else
         out
     }
-    tokens(a).cmp(&tokens(b))
+    let ((ea, a), (eb, b)) = (epoch(a), epoch(b));
+    ea.cmp(&eb).then_with(|| tokens(a).cmp(&tokens(b)))
 }
 
 #[cfg(test)]
@@ -737,6 +748,13 @@ mod tests {
         assert_eq!(version_cmp("1.36.1-r20", "1.36.1-r7"), Ordering::Greater);
         assert_eq!(version_cmp("3.0.15-1~deb12u1", "3.0.15-1"), Ordering::Less);
         assert_eq!(version_cmp("v1.9.1", "1.9.1"), Ordering::Equal);
+        // A missing epoch is 0, and the epoch outranks the rest.
+        assert_eq!(
+            version_cmp("2.28-225.el8_8.6", "0:2.28-251.el8_10.2"),
+            Ordering::Less
+        );
+        assert_eq!(version_cmp("0:1.2-3", "1.2-3"), Ordering::Equal);
+        assert_eq!(version_cmp("1:1.0-1", "2.0-1"), Ordering::Greater);
     }
 
     #[test]
