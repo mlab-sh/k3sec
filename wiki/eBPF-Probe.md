@@ -24,6 +24,7 @@ Only the programs for the requested `--kind`s are attached.
 | Detection | Event | How |
 |-----------|-------|-----|
 | **Ancestry** | `exec`: "exec /bin/sh (sh) by nginx", `ppid`, `ancestry` = `nginx > sh` | the parents of the process in its container, read from `/proc/<pid>/stat` (8 at most, up to the container's first process) |
+| **Fileless, deleted, hidden, temp dir** | `exec` with `exec_anomaly` = `fileless` / `deleted` (critical), `hidden` / `temp_dir` (warning) | the exe link: `/memfd:…` (runc's own `runc_cloned` memfd excepted), `(deleted)`, a dotted path component, `/tmp`, `/dev/shm`, `/var/tmp`. Drift, when it applies too, names the event |
 | **Drift** | `exec`, severity critical, `drift=true`, "a binary not in the image" | the exec'd file is in the container's writable overlay layer (`upperdir` of its root mount): added or modified after the container started. The layer is read once per container, through another process of it when the exec is already gone |
 
 ## Build

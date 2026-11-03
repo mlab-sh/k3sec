@@ -267,7 +267,18 @@ fn build_event(
     let (kind_str, severity, message) = match probe_kind {
         ProbeKind::Exec => {
             let bin = cstr(&ev.filename[..FILENAME_LEN]);
-            if facts.drift {
+            if let Some((what, severity)) = facts
+                .anomaly
+                .filter(|_| !facts.drift)
+                .map(ExecAnomaly::describe)
+            {
+                let shown = if bin.is_empty() {
+                    comm.clone()
+                } else {
+                    bin.clone()
+                };
+                ("exec", severity, format!("exec {shown} ({comm}): {what}"))
+            } else if facts.drift {
                 (
                     "exec",
                     Severity::Critical,
@@ -314,6 +325,9 @@ fn build_event(
         .meta("container_id", short_id(container_id));
     if facts.drift {
         builder = builder.meta("drift", "true");
+    }
+    if let Some(a) = facts.anomaly {
+        builder = builder.meta("exec_anomaly", a.as_str());
     }
     if let Some((ppid, _)) = facts.ancestors.first() {
         let chain: Vec<&str> = facts
@@ -405,6 +419,65 @@ struct Facts {
     drift: bool,
     /// The process's ancestors in its container, nearest first: `(pid, comm)`.
     ancestors: Vec<(u32, String)>,
+    /// How the exec'd file itself is suspicious, if it is.
+    anomaly: Option<ExecAnomaly>,
+}
+
+/// Where an exec'd binary lives, when that is itself a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecAnomaly {
+    /// Run from memory (`memfd_create`), no file on disk.
+    Fileless,
+    /// The file was deleted after it started (or while it was being run).
+    Deleted,
+    /// A path component starts with a dot (`/tmp/.x/payload`).
+    Hidden,
+    /// From a world-writable temporary directory.
+    TempDir,
+}
+
+impl ExecAnomaly {
+    fn of(path: &str, exe_link: &str) -> Option<Self> {
+        if let Some(memfd) = exe_link.strip_prefix("/memfd:") {
+            // runc re-executes itself from a memfd to start every container.
+            return (!memfd.starts_with("runc_cloned")).then_some(Self::Fileless);
+        }
+        if exe_link.ends_with(" (deleted)") {
+            return Some(Self::Deleted);
+        }
+        let path = if path.is_empty() { exe_link } else { path };
+        if path
+            .split('/')
+            .any(|c| c.starts_with('.') && c != "." && c != "..")
+        {
+            return Some(Self::Hidden);
+        }
+        ["/tmp/", "/dev/shm/", "/var/tmp/"]
+            .iter()
+            .any(|d| path.starts_with(d))
+            .then_some(Self::TempDir)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fileless => "fileless",
+            Self::Deleted => "deleted",
+            Self::Hidden => "hidden",
+            Self::TempDir => "temp_dir",
+        }
+    }
+
+    fn describe(self) -> (&'static str, Severity) {
+        match self {
+            Self::Fileless => (
+                "run from memory (memfd), no file on disk",
+                Severity::Critical,
+            ),
+            Self::Deleted => ("its file is deleted", Severity::Critical),
+            Self::Hidden => ("a hidden path", Severity::Warning),
+            Self::TempDir => ("from a temporary directory", Severity::Warning),
+        }
+    }
 }
 
 impl Facts {
@@ -416,6 +489,10 @@ impl Facts {
                 && upper_dir(container_id, ev.pid)
                     .is_some_and(|upper| in_upper_layer(&upper, &path));
             facts.ancestors = ancestors(ev.pid, container_id);
+            let exe_link = std::fs::read_link(format!("/proc/{}/exe", ev.pid))
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            facts.anomaly = ExecAnomaly::of(&path, &exe_link);
         }
         facts
     }
@@ -648,5 +725,37 @@ mod tests {
         assert_eq!(parent_of("garbage"), None);
         // This test's own parent is in no container of that name: none listed.
         assert!(ancestors(std::process::id(), "no-such-container").is_empty());
+    }
+
+    #[test]
+    fn exec_anomalies() {
+        use ExecAnomaly::*;
+        assert_eq!(
+            ExecAnomaly::of("/proc/self/fd/3", "/memfd:payload (deleted)"),
+            Some(Fileless)
+        );
+        assert_eq!(
+            ExecAnomaly::of(
+                "/proc/self/fd/6",
+                "/memfd:runc_cloned:/proc/self/exe (deleted)"
+            ),
+            None,
+            "runc starting a container"
+        );
+        assert_eq!(
+            ExecAnomaly::of("/usr/bin/x", "/usr/bin/x (deleted)"),
+            Some(Deleted)
+        );
+        assert_eq!(
+            ExecAnomaly::of("/var/lib/.cache/kworker", "/var/lib/.cache/kworker"),
+            Some(Hidden)
+        );
+        assert_eq!(ExecAnomaly::of("/dev/shm/x", "/dev/shm/x"), Some(TempDir));
+        assert_eq!(ExecAnomaly::of("/usr/bin/curl", "/usr/bin/curl"), None);
+        assert_eq!(
+            ExecAnomaly::of("", "/tmp/a"),
+            Some(TempDir),
+            "path gone, the link tells"
+        );
     }
 }
