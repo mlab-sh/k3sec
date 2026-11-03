@@ -349,7 +349,21 @@ fn keeps(eff: &Effective, ev: &SecEvent) -> bool {
 }
 
 async fn inventories(mut rx: mpsc::Receiver<ImageInventory>, shared: Shared, writer: Writer) {
-    while let Some(inv) = rx.recv().await {
+    while let Some(mut inv) = rx.recv().await {
+        let changed = {
+            let Ok(s) = shared.lock() else { return };
+            let key = inv.key().to_string();
+            carry_over(&mut inv, s.inventories.get(&key))
+        };
+        if !changed {
+            // Rescanned the same (a `configure` restarts the watcher): mlab
+            // has it, a re-upload would only cost bandwidth. The containers
+            // seen now are kept for the next `inventory`.
+            if let Ok(mut s) = shared.lock() {
+                s.inventories.insert(inv.key().to_string(), inv);
+            }
+            continue;
+        }
         let ready = api::InventoryReady {
             digest: inv.key().to_string(),
             image: inv.image.clone(),
@@ -361,6 +375,31 @@ async fn inventories(mut rx: mpsc::Receiver<ImageInventory>, shared: Shared, wri
         }
         writer.event(api::event::INVENTORY_READY, &ready);
     }
+}
+
+/// Keep what an earlier inventory of the same image knew to be loaded (a
+/// restarted watcher starts all dormant again), and say whether the result
+/// differs from it in its packages or their reachability.
+fn carry_over(inv: &mut ImageInventory, cached: Option<&ImageInventory>) -> bool {
+    use k3sec_inventory::Reachability;
+    let Some(cached) = cached else { return true };
+    let loaded: std::collections::HashSet<&str> = cached
+        .packages
+        .iter()
+        .filter(|p| p.reachability == Reachability::Loaded)
+        .map(|p| p.purl.as_str())
+        .collect();
+    for p in &mut inv.packages {
+        if loaded.contains(p.purl.as_str()) {
+            p.reachability = Reachability::Loaded;
+        }
+    }
+    inv.packages.len() != cached.packages.len()
+        || inv
+            .packages
+            .iter()
+            .zip(&cached.packages)
+            .any(|(a, b)| a.purl != b.purl || a.reachability != b.reachability)
 }
 
 /// Cluster id and node versions, fetched once at start (best effort).
@@ -579,6 +618,54 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn rescan_keeps_loaded_and_is_not_announced_again() {
+        use k3sec_inventory::{Package, PackageKind, Reachability};
+        let pkg = |name: &str, r| {
+            let mut p = Package::new(
+                name,
+                "1",
+                PackageKind::Os,
+                format!("pkg:deb/debian/{name}@1"),
+            );
+            p.reachability = r;
+            p
+        };
+        let inv = |pkgs| ImageInventory {
+            image: "nginx".into(),
+            digest: Some("sha256:x".into()),
+            os: None,
+            containers: vec![],
+            packages: pkgs,
+            mapped_files: 0,
+            warnings: vec![],
+        };
+        let cached = inv(vec![
+            pkg("a", Reachability::Loaded),
+            pkg("b", Reachability::Dormant),
+        ]);
+        assert!(carry_over(&mut inv(vec![]), None), "first sight");
+
+        let mut rescan = inv(vec![
+            pkg("a", Reachability::Dormant),
+            pkg("b", Reachability::Dormant),
+        ]);
+        assert!(!carry_over(&mut rescan, Some(&cached)));
+        assert_eq!(rescan.packages[0].reachability, Reachability::Loaded);
+
+        let mut promoted = inv(vec![
+            pkg("a", Reachability::Dormant),
+            pkg("b", Reachability::Loaded),
+        ]);
+        assert!(carry_over(&mut promoted, Some(&cached)));
+        let mut grown = inv(vec![
+            pkg("a", Reachability::Loaded),
+            pkg("b", Reachability::Dormant),
+            pkg("c", Reachability::Dormant),
+        ]);
+        assert!(carry_over(&mut grown, Some(&cached)));
     }
 
     fn frames(sink: &Sink) -> Vec<ToolMsg> {
