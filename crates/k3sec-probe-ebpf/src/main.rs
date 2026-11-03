@@ -21,9 +21,9 @@ use aya_ebpf::{
         bpf_get_current_uid_gid, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
         bpf_probe_read_user_str_bytes,
     },
-    macros::{kprobe, map, tracepoint},
+    macros::{kprobe, map, raw_tracepoint, tracepoint},
     maps::{Array, RingBuf},
-    programs::{ProbeContext, TracePointContext},
+    programs::{ProbeContext, RawTracePointContext, TracePointContext},
     EbpfContext,
 };
 use k3sec_probe_common::{af, kind, Event, FILENAME_LEN};
@@ -73,6 +73,22 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
 
     entry.submit(0);
     Ok(())
+}
+
+/// The same `sched_process_exec`, as a raw tracepoint: attached by name, so it
+/// works where tracefs is not mounted (Talos in Docker). It does not read the
+/// path (that needs `struct linux_binprm` offsets, per kernel): userspace
+/// takes it from `/proc/<pid>/exe`.
+#[raw_tracepoint(tracepoint = "sched_process_exec")]
+pub fn k3sec_execve_raw(_ctx: RawTracePointContext) -> i32 {
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return 0;
+    };
+    // SAFETY: as in `try_execve`; `fill_common` initializes every field.
+    unsafe { fill_common(entry.as_mut_ptr(), kind::EXEC) };
+    entry.submit(0);
+    0
 }
 
 // ---------------------------------------------------------------------------

@@ -74,7 +74,8 @@ What k3sec does **not** see yet, and how it shows up.
   through another process of the container. YARA on `file_write` still reads
   the writer's `/proc/<pid>/root` and sees nothing there. On a real node (or
   VM), `hostPID` is the kernel's namespace and all of it works.
-- **tracefs** must be mounted on the node at `/sys/kernel/tracing` (systemd
-  and Talos do it; Talos in Docker, `talosctl cluster create`, does not); the
-  DaemonSet mounts it from there. Without it the `ebpf` source reports
-  `tracefs not found` and the others keep going.
+- **tracefs** is mounted on the node at `/sys/kernel/tracing` by systemd and
+  Talos (not by Talos in Docker, `talosctl cluster create`); the DaemonSet
+  mounts it from there. Without it, exec events come from a raw tracepoint
+  (attached by name) and the path is read from `/proc/<pid>/exe`: a process
+  gone before that reads `exec <name> (path unknown: process gone)`.

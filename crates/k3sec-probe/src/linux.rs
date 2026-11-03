@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{Array, RingBuf};
-use aya::programs::{KProbe, TracePoint};
+use aya::programs::{KProbe, RawTracePoint, TracePoint};
 use aya::Ebpf;
 use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
@@ -95,8 +95,9 @@ pub async fn run(
                 }
                 guard.clear_ready();
 
-                for ev in batch {
+                for mut ev in batch {
                     let at = chrono::Utc::now();
+                    fill_exec_path(&mut ev);
                     let Some((probe_kind, container_id)) = classify(&ev, &config, &stats) else {
                         continue;
                     };
@@ -132,7 +133,16 @@ pub async fn run(
 /// Load and attach only the programs whose kind is enabled by `--kind`.
 fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     if config.kinds.allows(ProbeKind::Exec) {
-        attach_tracepoint(ebpf, "k3sec_execve", "sched", "sched_process_exec")?;
+        if let Err(e) = attach_tracepoint(ebpf, "k3sec_execve", "sched", "sched_process_exec") {
+            // No tracefs (Talos in Docker): the raw tracepoint needs none.
+            attach_raw_tracepoint(ebpf, "k3sec_execve_raw", "sched_process_exec")
+                .with_context(|| format!("{e:#}"))?;
+            tracing::warn!(
+                error = %format!("{e:#}"),
+                "exec events through the raw tracepoint: paths read from /proc \
+                 (a process gone before that shows its name only)"
+            );
+        }
     }
     if config.kinds.allows(ProbeKind::FileWrite) {
         // An internal function: a kernel may have inlined it. Then no
@@ -159,6 +169,20 @@ fn attach_tracepoint(ebpf: &mut Ebpf, prog: &str, category: &str, name: &str) ->
     program
         .attach(category, name)
         .with_context(|| format!("failed to attach {prog} to {category}:{name}"))?;
+    Ok(())
+}
+
+fn attach_raw_tracepoint(ebpf: &mut Ebpf, prog: &str, name: &str) -> Result<()> {
+    let program: &mut RawTracePoint = ebpf
+        .program_mut(prog)
+        .ok_or_else(|| anyhow!("eBPF program `{prog}` not found"))?
+        .try_into()?;
+    program
+        .load()
+        .with_context(|| format!("failed to load {prog}"))?;
+    program
+        .attach(name)
+        .with_context(|| format!("failed to attach {prog} to raw tracepoint {name}"))?;
     Ok(())
 }
 
@@ -232,7 +256,12 @@ fn build_event(
     let (kind_str, severity, message) = match probe_kind {
         ProbeKind::Exec => {
             let bin = cstr(&ev.filename[..FILENAME_LEN]);
-            ("exec", Severity::Info, format!("exec {bin} ({comm})"))
+            let message = if bin.is_empty() {
+                format!("exec {comm} (path unknown: process gone)")
+            } else {
+                format!("exec {bin} ({comm})")
+            };
+            ("exec", Severity::Info, message)
         }
         ProbeKind::Connect => {
             let dst = format_dest(ev);
@@ -300,6 +329,20 @@ fn maybe_request_scan(
 }
 
 /// Convert a NUL-padded byte field to a `String` (lossy, trimmed at first NUL).
+/// An exec record from the raw tracepoint has no path: read it now, while
+/// the process lives. Gone already, it keeps its name only.
+fn fill_exec_path(ev: &mut Event) {
+    if ev.kind != kind::EXEC || ev.filename[0] != 0 {
+        return;
+    }
+    if let Ok(exe) = std::fs::read_link(format!("/proc/{}/exe", ev.pid)) {
+        let path = exe.to_string_lossy();
+        let path = path.trim_end_matches(" (deleted)").as_bytes();
+        let n = path.len().min(FILENAME_LEN - 1);
+        ev.filename[..n].copy_from_slice(&path[..n]);
+    }
+}
+
 fn cstr(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
@@ -367,4 +410,30 @@ fn report_drops(stats: &DropStats, drops_map: &Array<aya::maps::MapData, u64>) {
         malformed = stats.malformed.load(Ordering::Relaxed),
         "eBPF probe drop counters",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_exec_records_get_their_path_from_proc() {
+        let mut ev = Event::zeroed();
+        ev.kind = kind::EXEC;
+        ev.pid = std::process::id();
+        fill_exec_path(&mut ev);
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(cstr(&ev.filename), me.to_string_lossy());
+
+        // A path the tracepoint already gave is kept; other kinds are left alone.
+        ev.filename = [0; FILENAME_LEN];
+        ev.filename[..9].copy_from_slice(b"/bin/true");
+        fill_exec_path(&mut ev);
+        assert_eq!(cstr(&ev.filename), "/bin/true");
+        let mut conn = Event::zeroed();
+        conn.kind = kind::CONNECT;
+        conn.pid = std::process::id();
+        fill_exec_path(&mut conn);
+        assert_eq!(conn.filename[0], 0);
+    }
 }
