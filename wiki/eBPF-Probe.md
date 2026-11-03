@@ -134,8 +134,17 @@ container or a malformed record increments a counter, logged on shutdown
 (format; values elided):
 
 ```text
-INFO eBPF probe drop counters kernel_ringbuf_full=0 host=… unresolved=… malformed=0
+INFO eBPF probe drop counters kernel_ringbuf_full=0 host=7 unresolved=1 local=17 malformed=0 host_cgroups_in_kernel=10
 ```
+
+The kernel filters before it takes a ring slot: an `open()` whose path is not
+watched never reaches the ring (the 2 MiB ring took a 2 000-exec burst in a pod
+with no loss; before, the host's opens filled it and 62% of the burst was
+lost). The host's own cgroups, once userspace has seen one of their events,
+go into `HOST_CGROUPS` and the kernel drops their next events itself (cgroup
+v2): 2 000 execs from a host shell give `host=7`, the container's next to
+them all reported. On a node that is itself a container (k3d, kind), the host
+beyond it is not in its cgroup tree and stays filtered in userspace.
 
 Scan requests for [YARA](YARA-Detection) are sent with `try_send`: a full scan
 queue drops the scan, never stalls capture.

@@ -35,41 +35,74 @@ pub fn container_id_of_pid(pid: u32) -> Option<String> {
 /// cgroup namespace).
 #[cfg(target_os = "linux")]
 pub fn container_id_of_cgroup(cgroup_id: u64) -> Option<String> {
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Mutex;
-
-    /// Inode → container id, and the inodes no walk found.
-    type Index = (HashMap<u64, String>, HashSet<u64>);
-    static INDEX: Mutex<Option<Index>> = Mutex::new(None);
     let mut guard = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    let (map, misses) = guard.get_or_insert_with(Default::default);
-    if let Some(id) = map.get(&cgroup_id) {
+    let index = guard.get_or_insert_with(Default::default);
+    if let Some(id) = index.containers.get(&cgroup_id) {
         return Some(id.clone());
     }
-    if misses.contains(&cgroup_id) {
+    if index.misses.contains(&cgroup_id) {
         return None;
     }
     let root = ["/proc/1/root/sys/fs/cgroup", "/sys/fs/cgroup"]
         .into_iter()
         .find(|r| std::fs::read_dir(r).is_ok())?;
-    *map = cgroup_index(std::path::Path::new(root));
-    let found = map.get(&cgroup_id).cloned();
+    let root = std::path::Path::new(root);
+    let (containers, hosts) = cgroup_index(root);
+    index.containers = containers;
+    // Only a pure cgroup v2 tree shares its ids with the kernel's
+    // `bpf_get_current_cgroup_id`; a v1 hierarchy's inodes are another space.
+    index.hosts = if root.join("cgroup.controllers").exists() {
+        hosts
+    } else {
+        Default::default()
+    };
+    let found = index.containers.get(&cgroup_id).cloned();
     if found.is_none() {
         // shortcut: wholesale reset instead of expiry, bounded by the node's cgroups
-        if misses.len() >= 4096 {
-            misses.clear();
+        if index.misses.len() >= 4096 {
+            index.misses.clear();
         }
-        misses.insert(cgroup_id);
+        index.misses.insert(cgroup_id);
     }
     found
 }
 
-/// Directory inode → container id, for every container cgroup under `root`.
+/// A cgroup v2 id that is a directory of the host's tree with no container in
+/// its path (`system.slice/sshd.service`), as of the last walk: the kernel can
+/// drop its events (`HOST_CGROUPS`). False for anything not seen in a walk.
 #[cfg(target_os = "linux")]
-fn cgroup_index(root: &std::path::Path) -> std::collections::HashMap<u64, String> {
+pub fn is_host_cgroup(cgroup_id: u64) -> bool {
+    let guard = INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().is_some_and(|i| i.hosts.contains(&cgroup_id))
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct Index {
+    /// Inode → container id.
+    containers: std::collections::HashMap<u64, String>,
+    /// Inodes no walk found a container for.
+    misses: std::collections::HashSet<u64>,
+    /// Inodes of the host's own cgroups.
+    hosts: std::collections::HashSet<u64>,
+}
+
+#[cfg(target_os = "linux")]
+static INDEX: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+
+/// Directory inode → container id, for every container cgroup under `root`,
+/// and the inodes of the others (the host's).
+#[cfg(target_os = "linux")]
+fn cgroup_index(
+    root: &std::path::Path,
+) -> (
+    std::collections::HashMap<u64, String>,
+    std::collections::HashSet<u64>,
+) {
     use std::os::unix::fs::MetadataExt;
 
     let mut map = std::collections::HashMap::new();
+    let mut hosts = std::collections::HashSet::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -83,6 +116,8 @@ fn cgroup_index(root: &std::path::Path) -> std::collections::HashMap<u64, String
             let path = entry.path();
             if let Some(id) = path.to_str().and_then(container_id_from_cgroup) {
                 map.insert(meta.ino(), id);
+            } else {
+                hosts.insert(meta.ino());
             }
             // Deep enough for nested runtimes (k3s in a container: 5 to 6).
             if depth < 12 {
@@ -90,7 +125,7 @@ fn cgroup_index(root: &std::path::Path) -> std::collections::HashMap<u64, String
             }
         }
     }
-    map
+    (map, hosts)
 }
 
 #[cfg(test)]
@@ -149,12 +184,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let ino = std::fs::metadata(&dir).unwrap().ino();
         let pod_ino = std::fs::metadata(dir.parent().unwrap()).unwrap().ino();
-        let map = cgroup_index(&root);
+        let host_ino = {
+            let sshd = root.join("system.slice/sshd.service");
+            std::fs::create_dir_all(&sshd).unwrap();
+            std::fs::metadata(&sshd).unwrap().ino()
+        };
+        let (map, hosts) = cgroup_index(&root);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(map.get(&ino).map(String::as_str), Some(CID));
         assert!(
             !map.contains_key(&pod_ino),
             "the pod's cgroup is no container"
         );
+        assert!(hosts.contains(&host_ino) && !hosts.contains(&ino));
     }
 }

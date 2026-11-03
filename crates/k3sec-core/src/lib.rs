@@ -16,9 +16,9 @@ pub mod scan;
 pub mod source;
 pub mod workload;
 
-#[cfg(target_os = "linux")]
-pub use cgroup::container_id_of_cgroup;
 pub use cgroup::{container_id_from_cgroup, container_id_of_pid};
+#[cfg(target_os = "linux")]
+pub use cgroup::{container_id_of_cgroup, is_host_cgroup};
 pub use event::{SecEvent, SecEventBuilder, Severity, Source};
 pub use output::{OutputFormat, Printer};
 pub use resolver::{ContainerInfo, ContainerResolver};

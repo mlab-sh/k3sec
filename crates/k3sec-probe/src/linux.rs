@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use aya::maps::{Array, RingBuf};
+use aya::maps::{Array, HashMap as BpfHashMap, RingBuf};
 use aya::programs::{
     CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, KProbe, RawTracePoint, TracePoint,
 };
@@ -22,8 +22,8 @@ use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
 
 use k3sec_core::{
-    container_id_of_cgroup, container_id_of_pid, ContainerInfo, ContainerResolver, EventSink,
-    ScanRequest, ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
+    container_id_of_cgroup, container_id_of_pid, is_host_cgroup, ContainerInfo, ContainerResolver,
+    EventSink, ScanRequest, ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
 };
 use k3sec_probe_common::{af, flag, kind, Event, COMM_LEN, FILENAME_LEN};
 
@@ -44,6 +44,8 @@ struct DropStats {
     local: AtomicU64,
     /// Malformed / short ring-buffer records.
     malformed: AtomicU64,
+    /// Host cgroups handed to the kernel, whose events it now drops itself.
+    host_cgroups: AtomicU64,
 }
 
 pub async fn run(
@@ -69,6 +71,11 @@ pub async fn run(
     let drops_map: Array<_, u64> = Array::try_from(
         ebpf.take_map("DROPS")
             .ok_or_else(|| anyhow!("DROPS map missing from eBPF object"))?,
+    )?;
+
+    let mut host_cgroups: BpfHashMap<_, u64, u8> = BpfHashMap::try_from(
+        ebpf.take_map("HOST_CGROUPS")
+            .ok_or_else(|| anyhow!("HOST_CGROUPS map missing from eBPF object"))?,
     )?;
 
     tracing::info!("eBPF probe loaded; streaming kernel events");
@@ -100,6 +107,13 @@ pub async fn run(
                 for mut ev in batch {
                     let at = chrono::Utc::now();
                     let Some((probe_kind, container_id)) = classify(&ev, &config, &stats) else {
+                        // The host's: the kernel drops its next events itself.
+                        if ev.cgroup_id != 0
+                            && is_host_cgroup(ev.cgroup_id)
+                            && host_cgroups.insert(ev.cgroup_id, 1, 0).is_ok()
+                        {
+                            stats.host_cgroups.fetch_add(1, Ordering::Relaxed);
+                        }
                         continue;
                     };
                     if let Some(pid) = local_pid(&ev, &container_id) {
@@ -1089,6 +1103,7 @@ fn report_drops(stats: &DropStats, drops_map: &Array<aya::maps::MapData, u64>) {
         unresolved = stats.unresolved.load(Ordering::Relaxed),
         local = stats.local.load(Ordering::Relaxed),
         malformed = stats.malformed.load(Ordering::Relaxed),
+        host_cgroups_in_kernel = stats.host_cgroups.load(Ordering::Relaxed),
         "eBPF probe drop counters",
     );
 }

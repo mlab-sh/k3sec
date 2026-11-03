@@ -22,7 +22,7 @@ use aya_ebpf::{
         bpf_probe_read_user_str_bytes,
     },
     macros::{cgroup_skb, kprobe, kretprobe, map, raw_tracepoint, tracepoint},
-    maps::{Array, PerCpuArray, RingBuf},
+    maps::{ring_buf::RingBufEntry, Array, LruHashMap, PerCpuArray, RingBuf},
     programs::{
         ProbeContext, RawTracePointContext, RetProbeContext, SkBuffContext, TracePointContext,
     },
@@ -39,6 +39,11 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(2 * 1024 * 1024, 0);
 /// so the host's every `open()` never touches the ring.
 #[map]
 static PATH_SCRATCH: PerCpuArray<[u8; FILENAME_LEN]> = PerCpuArray::with_max_entries(1, 0);
+
+/// The host's own cgroups (no container), learned by userspace: their events
+/// stop here instead of crossing the ring to be dropped there.
+#[map]
+static HOST_CGROUPS: LruHashMap<u64, u8> = LruHashMap::with_max_entries(8192, 0);
 
 /// Switches userspace sets (see [`flag`]).
 #[map]
@@ -90,8 +95,7 @@ pub fn k3sec_execve(ctx: TracePointContext) -> u32 {
 }
 
 fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -118,8 +122,7 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
 /// takes it from `/proc/<pid>/exe`.
 #[raw_tracepoint(tracepoint = "sched_process_exec")]
 pub fn k3sec_execve_raw(_ctx: RawTracePointContext) -> i32 {
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return 0;
     };
     // SAFETY: as in `try_execve`; `fill_common` initializes every field.
@@ -136,8 +139,7 @@ pub fn k3sec_exit(_ctx: RawTracePointContext) -> i32 {
     if (id >> 32) as u32 != id as u32 {
         return 0; // a thread, not the group leader
     }
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return 0;
     };
     // SAFETY: as in `try_execve`; `fill_common` initializes every field.
@@ -184,8 +186,7 @@ fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -254,8 +255,7 @@ fn try_unix_connect(ctx: &ProbeContext) -> Result<(), i64> {
     if uaddr.is_null() {
         return Ok(());
     }
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -292,8 +292,7 @@ fn try_mount(ctx: &ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
     let name: *const u8 = unsafe { bpf_probe_read_kernel(fs_type) }?;
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -317,8 +316,7 @@ pub fn k3sec_commit_creds(_ctx: ProbeContext) -> u32 {
     if bpf_get_current_uid_gid() as u32 == 0 {
         return 0;
     }
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return 0;
     };
     // SAFETY: as in `try_execve`; `fill_common` initializes every field.
@@ -352,8 +350,7 @@ fn try_listen(ctx: &ProbeContext) -> Result<(), i64> {
     let family: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_FAMILY) as *const u16) }?;
     let addr: [u8; 4] =
         unsafe { bpf_probe_read_kernel((sk as usize + SKC_RCV_SADDR) as *const [u8; 4]) }?;
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -387,8 +384,7 @@ fn try_accept(ctx: &RetProbeContext) -> Result<(), i64> {
         unsafe { bpf_probe_read_kernel((sk as usize + SKC_DADDR) as *const [u8; 4]) }?;
     let peer_port: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_DPORT) as *const u16) }?;
     let local_port: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_NUM) as *const u16) }?;
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -471,15 +467,16 @@ fn try_egress(ctx: &SkBuffContext) -> Result<(), i64> {
             }
         }
     }
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    // SAFETY: a helper reading the socket's cgroup, valid in cgroup_skb.
+    let cgroup = unsafe { aya_ebpf::helpers::gen::bpf_skb_cgroup_id(ctx.skb.skb) };
+    let Some(mut entry) = reserve(cgroup) else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
     // SAFETY: as in `try_execve`.
     unsafe {
         fill_common(e, if dns { kind::DNS } else { kind::UDP });
-        (*e).cgroup_id = aya_ebpf::helpers::gen::bpf_skb_cgroup_id(ctx.skb.skb);
+        (*e).cgroup_id = cgroup;
         (*e).daddr = daddr;
         (*e).dport = dport;
         (*e).af = family;
@@ -531,8 +528,7 @@ fn try_connect(ctx: &ProbeContext, family: u16) -> Result<(), i64> {
         }
     }
 
-    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
-        bump_drops();
+    let Some(mut entry) = reserve_current() else {
         return Err(0);
     };
     let e = entry.as_mut_ptr();
@@ -570,6 +566,28 @@ unsafe fn fill_common(e: *mut Event, kind: u32) {
         Err(_) => (*e).comm = [0u8; 16],
     }
     core::ptr::write_bytes((*e).filename.as_mut_ptr(), 0, FILENAME_LEN);
+}
+
+/// A ring slot for an event of `cgroup`: none for the host's cgroups, nor
+/// when the ring is full (counted in `DROPS`).
+#[inline(always)]
+fn reserve(cgroup: u64) -> Option<RingBufEntry<Event>> {
+    // SAFETY: a lookup whose value is not kept.
+    if unsafe { HOST_CGROUPS.get(&cgroup) }.is_some() {
+        return None;
+    }
+    let entry = EVENTS.reserve::<Event>(0);
+    if entry.is_none() {
+        bump_drops();
+    }
+    entry
+}
+
+/// [`reserve`] for the current task's cgroup.
+#[inline(always)]
+fn reserve_current() -> Option<RingBufEntry<Event>> {
+    // SAFETY: a helper reading the current task, valid in every tracing program.
+    reserve(unsafe { bpf_get_current_cgroup_id() })
 }
 
 fn bump_drops() {
