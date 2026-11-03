@@ -22,7 +22,7 @@ use aya_ebpf::{
         bpf_probe_read_user_str_bytes,
     },
     macros::{cgroup_skb, kprobe, kretprobe, map, raw_tracepoint, tracepoint},
-    maps::{Array, RingBuf},
+    maps::{Array, PerCpuArray, RingBuf},
     programs::{
         ProbeContext, RawTracePointContext, RetProbeContext, SkBuffContext, TracePointContext,
     },
@@ -30,9 +30,15 @@ use aya_ebpf::{
 };
 use k3sec_probe_common::{af, flag, kind, Event, AUX_LEN, FILENAME_LEN};
 
-/// Ring buffer carrying events to userspace (256 KiB).
+/// Ring buffer carrying events to userspace (2 MiB, ~6 000 events): room for
+/// an exec storm while userspace catches up.
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(2 * 1024 * 1024, 0);
+
+/// Per-CPU scratch for an opened path: filtered before a ring slot is taken,
+/// so the host's every `open()` never touches the ring.
+#[map]
+static PATH_SCRATCH: PerCpuArray<[u8; FILENAME_LEN]> = PerCpuArray::with_max_entries(1, 0);
 
 /// Switches userspace sets (see [`flag`]).
 #[map]
@@ -165,15 +171,25 @@ fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
     let flags: u64 = unsafe { bpf_probe_read_kernel(how) }.unwrap_or(0);
     let write = is_write_open(flags);
 
+    // Filter first, in the per-CPU scratch: a reserved-then-discarded slot
+    // still fills the ring under load and wakes userspace for nothing.
+    let buf = PATH_SCRATCH.get_ptr_mut(0).ok_or(0i64)?;
+    // SAFETY: the per-CPU slot is this program's alone while it runs.
+    let keep = match unsafe { bpf_probe_read_user_str_bytes(filename_ptr, &mut *buf) } {
+        Ok(bytes) if write => matches_any(bytes, &SENSITIVE_PREFIXES),
+        Ok(bytes) => matches_any(bytes, &SECRET_PREFIXES),
+        Err(_) => false,
+    };
+    if !keep {
+        return Ok(());
+    }
+
     let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
         bump_drops();
         return Err(0);
     };
     let e = entry.as_mut_ptr();
-
-    // SAFETY: as in `try_execve`. We read the path into the slot, then keep the
-    // event only if it targets a sensitive prefix (writes) or a credential
-    // (reads), else discard it.
+    // SAFETY: as in `try_execve`; the path, NUL-terminated, comes from the scratch.
     unsafe {
         fill_common(
             e,
@@ -183,18 +199,8 @@ fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
                 kind::SECRET_READ
             },
         );
-        let read = bpf_probe_read_user_str_bytes(filename_ptr, &mut (*e).filename);
-        let keep = match read {
-            Ok(bytes) if write => matches_any(bytes, &SENSITIVE_PREFIXES),
-            Ok(bytes) => matches_any(bytes, &SECRET_PREFIXES),
-            Err(_) => false,
-        };
-        if !keep {
-            entry.discard(0);
-            return Ok(());
-        }
+        core::ptr::copy_nonoverlapping(buf as *const u8, (*e).filename.as_mut_ptr(), FILENAME_LEN);
     }
-
     entry.submit(0);
     Ok(())
 }
