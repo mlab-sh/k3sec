@@ -21,16 +21,22 @@ use aya_ebpf::{
         bpf_get_current_uid_gid, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
         bpf_probe_read_user_str_bytes,
     },
-    macros::{kprobe, map, raw_tracepoint, tracepoint},
+    macros::{cgroup_skb, kprobe, kretprobe, map, raw_tracepoint, tracepoint},
     maps::{Array, RingBuf},
-    programs::{ProbeContext, RawTracePointContext, TracePointContext},
+    programs::{
+        ProbeContext, RawTracePointContext, RetProbeContext, SkBuffContext, TracePointContext,
+    },
     EbpfContext,
 };
-use k3sec_probe_common::{af, kind, Event, AUX_LEN, FILENAME_LEN};
+use k3sec_probe_common::{af, flag, kind, Event, AUX_LEN, FILENAME_LEN};
 
 /// Ring buffer carrying events to userspace (256 KiB).
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+/// Switches userspace sets (see [`flag`]).
+#[map]
+static FLAGS: Array<u32> = Array::with_max_entries(4, 0);
 
 /// Single-slot counter of events dropped because the ring buffer was full.
 #[map]
@@ -313,6 +319,170 @@ pub fn k3sec_commit_creds(_ctx: ProbeContext) -> u32 {
     unsafe { fill_common(entry.as_mut_ptr(), kind::CREDS) };
     entry.submit(0);
     0
+}
+
+// `struct sock` starts with `struct sock_common`, whose first fields have kept
+// their offsets for years: `skc_daddr` (0), `skc_rcv_saddr` (4), `skc_dport`
+// (12, big-endian), `skc_num` (14, host order), `skc_family` (16).
+const SKC_DADDR: usize = 0;
+const SKC_RCV_SADDR: usize = 4;
+const SKC_DPORT: usize = 12;
+const SKC_NUM: usize = 14;
+const SKC_FAMILY: usize = 16;
+
+/// kprobe: `inet_csk_listen_start(struct sock *sk)`: a TCP socket listens.
+#[kprobe]
+pub fn k3sec_listen(ctx: ProbeContext) -> u32 {
+    let _ = try_listen(&ctx);
+    0
+}
+
+fn try_listen(ctx: &ProbeContext) -> Result<(), i64> {
+    let sk: *const u8 = ctx.arg(0).ok_or(1i64)?;
+    if sk.is_null() {
+        return Ok(());
+    }
+    let port: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_NUM) as *const u16) }?;
+    let family: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_FAMILY) as *const u16) }?;
+    let addr: [u8; 4] =
+        unsafe { bpf_probe_read_kernel((sk as usize + SKC_RCV_SADDR) as *const [u8; 4]) }?;
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return Err(0);
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: as in `try_execve`; `fill_common` initializes every field.
+    unsafe {
+        fill_common(e, kind::LISTEN);
+        (*e).dport = port;
+        (*e).af = family;
+        if family == af::INET {
+            (&mut (*e).daddr)[..4].copy_from_slice(&addr);
+        }
+    }
+    entry.submit(0);
+    Ok(())
+}
+
+/// kretprobe: `inet_csk_accept(…)` returns the accepted connection's sock.
+#[kretprobe]
+pub fn k3sec_accept(ctx: RetProbeContext) -> u32 {
+    let _ = try_accept(&ctx);
+    0
+}
+
+fn try_accept(ctx: &RetProbeContext) -> Result<(), i64> {
+    let sk: *const u8 = ctx.ret().ok_or(1i64)?;
+    if sk.is_null() {
+        return Ok(());
+    }
+    let family: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_FAMILY) as *const u16) }?;
+    let peer: [u8; 4] =
+        unsafe { bpf_probe_read_kernel((sk as usize + SKC_DADDR) as *const [u8; 4]) }?;
+    let peer_port: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_DPORT) as *const u16) }?;
+    let local_port: u16 = unsafe { bpf_probe_read_kernel((sk as usize + SKC_NUM) as *const u16) }?;
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return Err(0);
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: as in `try_execve`.
+    unsafe {
+        fill_common(e, kind::ACCEPT);
+        (*e).dport = u16::from_be(peer_port);
+        // A v4 peer on a v6 socket still has its address in `skc_daddr`.
+        if family == af::INET || peer != [0u8; 4] {
+            (*e).af = af::INET;
+            (&mut (*e).daddr)[..4].copy_from_slice(&peer);
+        } else {
+            (*e).af = family;
+        }
+        (&mut (*e).aux)[..2].copy_from_slice(&local_port.to_be_bytes());
+    }
+    entry.submit(0);
+    Ok(())
+}
+
+/// DNS question bytes copied (the name's labels, then type and class).
+const DNS_QUESTION: usize = 128;
+
+/// cgroup_skb egress, on the root cgroup: every datagram a container sends.
+/// DNS queries carry their question; other UDP only with `flag::UDP`.
+/// Always lets the packet through.
+#[cgroup_skb(egress)]
+pub fn k3sec_egress(ctx: SkBuffContext) -> i32 {
+    let _ = try_egress(&ctx);
+    1
+}
+
+fn try_egress(ctx: &SkBuffContext) -> Result<(), i64> {
+    // The data starts at the network header. Fixed-size loads only: the
+    // verifier rejects lengths it cannot bound.
+    let first: u8 = ctx.load(0)?;
+    let mut daddr = [0u8; 16];
+    let (l4, family) = match first >> 4 {
+        4 => {
+            let ip: [u8; 20] = ctx.load(0)?;
+            if ip[9] != 17 {
+                return Ok(()); // not UDP
+            }
+            daddr[..4].copy_from_slice(&ip[16..20]);
+            (((ip[0] & 0x0f) as usize) * 4, af::INET)
+        }
+        6 => {
+            let ip: [u8; 40] = ctx.load(0)?;
+            if ip[6] != 17 {
+                return Ok(()); // not UDP (extension headers not followed)
+            }
+            daddr.copy_from_slice(&ip[24..40]);
+            (40, af::INET6)
+        }
+        _ => return Ok(()),
+    };
+    let udp: [u8; 8] = ctx.load(l4)?;
+    let dport = u16::from_be_bytes([udp[2], udp[3]]);
+    let dns = dport == 53;
+    if !dns && FLAGS.get(flag::UDP).copied().unwrap_or(0) == 0 {
+        return Ok(());
+    }
+    // The question (labels, type, class): the biggest fixed-size read the
+    // packet holds (a short name with no EDNS record is ~15 bytes).
+    let question_at = l4 + 8 + 12; // UDP header, DNS header
+    let mut question = [0u8; DNS_QUESTION];
+    if dns {
+        // 8 bytes at a time while the packet holds them, then a last 4.
+        let mut read = 0;
+        while read + 8 <= DNS_QUESTION {
+            match ctx.load::<[u8; 8]>(question_at + read) {
+                Ok(chunk) => question[read..read + 8].copy_from_slice(&chunk),
+                Err(_) => break,
+            }
+            read += 8;
+        }
+        if read + 4 <= DNS_QUESTION {
+            if let Ok(chunk) = ctx.load::<[u8; 4]>(question_at + read) {
+                question[read..read + 4].copy_from_slice(&chunk);
+            }
+        }
+    }
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return Err(0);
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: as in `try_execve`.
+    unsafe {
+        fill_common(e, if dns { kind::DNS } else { kind::UDP });
+        (*e).cgroup_id = aya_ebpf::helpers::gen::bpf_skb_cgroup_id(ctx.skb.skb);
+        (*e).daddr = daddr;
+        (*e).dport = dport;
+        (*e).af = family;
+        if dns {
+            (&mut (*e).filename)[..DNS_QUESTION].copy_from_slice(&question);
+        }
+    }
+    entry.submit(0);
+    Ok(())
 }
 
 /// kprobe: `tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int len)`.

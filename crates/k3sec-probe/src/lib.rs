@@ -46,7 +46,19 @@ pub enum ProbeKind {
     Escape,
     /// A non-root process becomes root (setuid binary, setuid call).
     Privesc,
+    /// A TCP socket starts listening.
+    Listen,
+    /// An inbound TCP connection accepted. Only when asked for: a server
+    /// accepts all day.
+    Accept,
+    /// A DNS query, with its name.
+    Dns,
+    /// A UDP datagram sent, DNS aside. Only when asked for.
+    Udp,
 }
+
+/// Kinds reported only when `--kind` names them: too frequent otherwise.
+const OPT_IN: [ProbeKind; 3] = [ProbeKind::Exit, ProbeKind::Accept, ProbeKind::Udp];
 
 impl ProbeKind {
     /// The canonical `SecEvent.kind` string for this event kind.
@@ -59,6 +71,10 @@ impl ProbeKind {
             ProbeKind::SecretRead => "secret_read",
             ProbeKind::Escape => "escape",
             ProbeKind::Privesc => "privesc",
+            ProbeKind::Listen => "listen",
+            ProbeKind::Accept => "accept",
+            ProbeKind::Dns => "dns",
+            ProbeKind::Udp => "udp",
         }
     }
 }
@@ -75,9 +91,9 @@ impl KindFilter {
         Self { kinds }
     }
 
-    /// Whether `kind` should be emitted. `exit` only when listed.
+    /// Whether `kind` should be emitted. `exit`, `accept`, `udp` only when listed.
     pub fn allows(&self, kind: ProbeKind) -> bool {
-        self.kinds.contains(&kind) || (self.kinds.is_empty() && kind != ProbeKind::Exit)
+        self.kinds.contains(&kind) || (self.kinds.is_empty() && !OPT_IN.contains(&kind))
     }
 
     /// True when no kind is filtered out.
@@ -208,6 +224,8 @@ mod tests {
         assert!(f.allows(ProbeKind::FileWrite));
         assert!(!f.allows(ProbeKind::Exit), "exit only when asked for");
         assert!(KindFilter::new(vec![ProbeKind::Exit]).allows(ProbeKind::Exit));
+        assert!(f.allows(ProbeKind::Dns) && f.allows(ProbeKind::Listen));
+        assert!(!f.allows(ProbeKind::Accept) && !f.allows(ProbeKind::Udp));
     }
 
     #[test]

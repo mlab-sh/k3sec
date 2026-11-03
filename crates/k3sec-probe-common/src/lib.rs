@@ -25,6 +25,20 @@ pub mod kind {
     pub const MOUNT: u32 = 6;
     /// A non-root process's credentials change (`uid` = the old one).
     pub const CREDS: u32 = 7;
+    /// A socket starts listening (`dport` = the local port, `daddr` = its address).
+    pub const LISTEN: u32 = 8;
+    /// An inbound connection accepted (`daddr`/`dport` = the peer, `aux` = the local port, BE u16).
+    pub const ACCEPT: u32 = 9;
+    /// A DNS query sent (`daddr`/`dport` = the server, `filename` = the raw question).
+    pub const DNS: u32 = 10;
+    /// A UDP datagram sent, DNS aside (`daddr`/`dport` = the destination).
+    pub const UDP: u32 = 11;
+}
+
+/// Slots of the `FLAGS` map userspace sets.
+pub mod flag {
+    /// Report every UDP datagram, not only DNS (`--kind udp`).
+    pub const UDP: u32 = 0;
 }
 
 /// Address family values (as in `<sys/socket.h>`), for `Event::af`.

@@ -11,6 +11,10 @@ came from:
 | `exit` | raw tracepoint `sched_process_exit` | info | a process (not a thread) ends; only with `--kind exit` |
 | `escape` | kprobes `do_sys_openat2` (writes), `unix_stream_connect`, `alloc_fs_context` | critical | a write to a cgroup `release_agent` / `notify_on_release`, `/proc/sys/kernel/core_pattern` or `modprobe`; a connect to the runtime's socket (`docker.sock`, `containerd.sock`, `crio.sock`…); a new mount of the cgroup hierarchy, a kernel interface (`debugfs`, `securityfs`, `bpf`) or a disk filesystem (`ext4`, `xfs`…). runc's own mounts at container start are not reported |
 | `privesc` | kprobe `commit_creds`, non-root callers only | critical | a non-root process whose effective uid is 0 right after (read from `/proc/<pid>/status`: the `struct cred` layout varies by kernel): a setuid-root binary, a setuid call. The old uid is in the payload |
+| `listen` | kprobe `inet_csk_listen_start` | info | a TCP socket starts listening (address and port from `struct sock_common`) |
+| `accept` | kretprobe `inet_csk_accept` | info | an inbound TCP connection, its peer and local port; only with `--kind accept` (a server accepts all day: coredns' health checks alone, one a second) |
+| `dns` | `cgroup_skb/egress` on the root cgroup | info | a DNS query (UDP 53), its name read from the packet; the same name from the same container is reported once per 10 s. Kubernetes' search domains show as the queries they are (`example.org.cvss.svc.cluster.local`, then `example.org`). Needs `CAP_NET_ADMIN` (in the manifest) |
+| `udp` | same program | info | any other UDP datagram sent; only with `--kind udp` |
 | `secret_read` | kprobe `do_sys_openat2`, read-only opens | warning | service account tokens, `/etc/shadow`, `/etc/kubernetes/`, kubelet PKI, `.ssh` / `.aws` / `.kube` / `.docker` / gcloud / Azure credentials of `root` and of `/home/*` users (in-kernel prefixes, `/home` narrowed in userspace). Kubernetes clients read their token too: lab background, 1 read in 40 s |
 
 ```bash

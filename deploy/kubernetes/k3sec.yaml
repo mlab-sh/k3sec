@@ -142,6 +142,7 @@ spec:
                 - SYS_RESOURCE # locked memory for BPF maps (older kernels)
                 - SYS_PTRACE # other processes' /proc/<pid>/root, maps, exe
                 - DAC_READ_SEARCH # files of any owner inside containers
+                - NET_ADMIN # the DNS / UDP egress program on the root cgroup
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 512Mi }

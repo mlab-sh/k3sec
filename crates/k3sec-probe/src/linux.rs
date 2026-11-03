@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{Array, RingBuf};
-use aya::programs::{KProbe, RawTracePoint, TracePoint};
+use aya::programs::{
+    CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, KProbe, RawTracePoint, TracePoint,
+};
 use aya::Ebpf;
 use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
@@ -23,7 +25,7 @@ use k3sec_core::{
     container_id_of_cgroup, container_id_of_pid, ContainerInfo, ContainerResolver, EventSink,
     ScanRequest, ScanRequestSink, ScanTrigger, SecEvent, Severity, Source,
 };
-use k3sec_probe_common::{af, kind, Event, COMM_LEN, FILENAME_LEN};
+use k3sec_probe_common::{af, flag, kind, Event, COMM_LEN, FILENAME_LEN};
 
 use crate::{is_local_destination, NotPods, ProbeConfig, ProbeKind};
 
@@ -155,6 +157,26 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     if config.kinds.allows(ProbeKind::Exit) {
         attach_raw_tracepoint(ebpf, "k3sec_exit", "sched_process_exit")?;
     }
+    if config.kinds.allows(ProbeKind::Listen) {
+        if let Err(e) = attach_kprobe(ebpf, "k3sec_listen", "inet_csk_listen_start") {
+            tracing::warn!(error = %format!("{e:#}"), "listen events unavailable");
+        }
+    }
+    if config.kinds.allows(ProbeKind::Accept) {
+        attach_kprobe(ebpf, "k3sec_accept", "inet_csk_accept")?;
+    }
+    if config.kinds.allows(ProbeKind::Dns) || config.kinds.allows(ProbeKind::Udp) {
+        if config.kinds.allows(ProbeKind::Udp) {
+            let mut flags: Array<_, u32> = Array::try_from(
+                ebpf.map_mut("FLAGS")
+                    .ok_or_else(|| anyhow!("FLAGS map missing"))?,
+            )?;
+            flags.set(flag::UDP, 1, 0)?;
+        }
+        if let Err(e) = attach_egress(ebpf) {
+            tracing::warn!(error = %format!("{e:#}"), "dns / udp events unavailable");
+        }
+    }
     if config.kinds.allows(ProbeKind::Privesc) {
         if let Err(e) = attach_kprobe(ebpf, "k3sec_commit_creds", "commit_creds") {
             tracing::warn!(error = %format!("{e:#}"), "privilege escalation events unavailable");
@@ -202,6 +224,31 @@ fn attach_tracepoint(ebpf: &mut Ebpf, prog: &str, category: &str, name: &str) ->
     Ok(())
 }
 
+/// The egress program on the root cgroup v2 (the host's, through
+/// `/proc/1/root` in a pod), where every container's datagrams pass.
+fn attach_egress(ebpf: &mut Ebpf) -> Result<()> {
+    let root = ["/proc/1/root/sys/fs/cgroup", "/sys/fs/cgroup"]
+        .into_iter()
+        .find(|r| std::path::Path::new(r).join("cgroup.controllers").exists())
+        .ok_or_else(|| anyhow!("no cgroup v2 hierarchy"))?;
+    let cgroup = std::fs::File::open(root).with_context(|| format!("cannot open {root}"))?;
+    let program: &mut CgroupSkb = ebpf
+        .program_mut("k3sec_egress")
+        .ok_or_else(|| anyhow!("eBPF program `k3sec_egress` not found"))?
+        .try_into()?;
+    program.load().context("failed to load k3sec_egress")?;
+    // A link (kernel ≥ 5.7) stacks with other programs on its own and takes
+    // no attach flags: `AllowMultiple` makes the call fail.
+    program
+        .attach(
+            cgroup,
+            CgroupSkbAttachType::Egress,
+            CgroupAttachMode::Single,
+        )
+        .with_context(|| format!("failed to attach k3sec_egress to {root}"))?;
+    Ok(())
+}
+
 fn attach_raw_tracepoint(ebpf: &mut Ebpf, prog: &str, name: &str) -> Result<()> {
     let program: &mut RawTracePoint = ebpf
         .program_mut(prog)
@@ -242,6 +289,10 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         kind::EXIT => ProbeKind::Exit,
         kind::SECRET_READ => ProbeKind::SecretRead,
         kind::CREDS => ProbeKind::Privesc,
+        kind::LISTEN => ProbeKind::Listen,
+        kind::ACCEPT => ProbeKind::Accept,
+        kind::DNS => ProbeKind::Dns,
+        kind::UDP => ProbeKind::Udp,
         kind::UNIX_CONNECT | kind::MOUNT => match escape_technique(ev) {
             Some(_) => ProbeKind::Escape,
             None => return None,
@@ -256,6 +307,9 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
     }
     if probe_kind == ProbeKind::SecretRead && !is_credential(&cstr(&ev.filename[..FILENAME_LEN])) {
         return None;
+    }
+    if probe_kind == ProbeKind::Dns && !first_query(ev) {
+        return None; // the same name, from the same cgroup, moments ago
     }
     if probe_kind == ProbeKind::Connect && dest_ip(ev).is_some_and(is_local_destination) {
         stats.local.fetch_add(1, Ordering::Relaxed);
@@ -372,6 +426,32 @@ fn build_event(
                 ),
             )
         }
+        ProbeKind::Listen => (
+            "listen",
+            Severity::Info,
+            format!("listen {} ({comm})", format_dest(ev)),
+        ),
+        ProbeKind::Accept => {
+            let local = u16::from_be_bytes([ev.aux[0], ev.aux[1]]);
+            (
+                "accept",
+                Severity::Info,
+                format!("accept from {} on port {local} ({comm})", format_dest(ev)),
+            )
+        }
+        ProbeKind::Dns => {
+            let name = dns_name(&ev.filename).unwrap_or_else(|| "?".into());
+            (
+                "dns",
+                Severity::Info,
+                format!("dns {name} via {} ({comm})", format_dest(ev)),
+            )
+        }
+        ProbeKind::Udp => (
+            "udp",
+            Severity::Info,
+            format!("udp to {} ({comm})", format_dest(ev)),
+        ),
     };
 
     let mut builder = SecEvent::builder(Source::Ebpf, at)
@@ -428,7 +508,11 @@ fn maybe_request_scan(
         | ProbeKind::Exit
         | ProbeKind::SecretRead
         | ProbeKind::Escape
-        | ProbeKind::Privesc => return,
+        | ProbeKind::Privesc
+        | ProbeKind::Listen
+        | ProbeKind::Accept
+        | ProbeKind::Dns
+        | ProbeKind::Udp => return,
     };
     let req = ScanRequest {
         trigger,
@@ -472,6 +556,46 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// The name a DNS question asks: length-prefixed labels up to a zero. A name
+/// longer than what was captured ends with `…`.
+fn dns_name(question: &[u8]) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut at = 0;
+    // Ends when the captured bytes do: mid-name.
+    while let Some(&len) = question.get(at) {
+        if len == 0 {
+            return (!labels.is_empty()).then(|| labels.join("."));
+        }
+        if len > 63 {
+            return None; // a compression pointer or garbage: no name in a query
+        }
+        let label = question.get(at + 1..at + 1 + len as usize);
+        match label.filter(|l| !l.contains(&0)) {
+            Some(l) => labels.push(String::from_utf8_lossy(l).into_owned()),
+            None => break,
+        }
+        at += 1 + len as usize;
+    }
+    (!labels.is_empty()).then(|| format!("{}…", labels.join(".")))
+}
+
+/// Whether this cgroup has not asked for this name in the last 10 s (a
+/// resolver asks A and AAAA, retries, every client asks again).
+fn first_query(ev: &Event) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static SEEN: Mutex<Option<HashMap<(u64, String), Instant>>> = Mutex::new(None);
+    let Some(name) = dns_name(&ev.filename) else {
+        return true;
+    };
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    seen.retain(|_, at| now.duration_since(*at) < Duration::from_secs(10));
+    seen.insert((ev.cgroup_id, name), now).is_none()
 }
 
 /// The effective uid in `/proc/<pid>/status` (`Uid: real effective saved fs`).
@@ -772,8 +896,11 @@ fn short_id(id: &str) -> String {
 
 /// Format a connect event's destination as `ip:port`.
 fn format_dest(ev: &Event) -> String {
-    let ip = dest_ip(ev).map_or_else(|| "?".to_string(), |ip| ip.to_string());
-    format!("{ip}:{}", ev.dport)
+    match dest_ip(ev) {
+        Some(IpAddr::V6(ip)) => format!("[{ip}]:{}", ev.dport),
+        Some(ip) => format!("{ip}:{}", ev.dport),
+        None => format!("?:{}", ev.dport),
+    }
 }
 
 /// A connect event's destination address.
@@ -815,6 +942,13 @@ fn payload(
         ProbeKind::Exit => {}
         ProbeKind::Privesc => {
             obj["old_uid"] = serde_json::json!(ev.uid);
+        }
+        ProbeKind::Listen | ProbeKind::Accept | ProbeKind::Udp => {
+            obj["addr"] = serde_json::json!(format_dest(ev));
+        }
+        ProbeKind::Dns => {
+            obj["server"] = serde_json::json!(format_dest(ev));
+            obj["query"] = serde_json::json!(dns_name(&ev.filename));
         }
     }
     if let Some(info) = info {
@@ -967,5 +1101,19 @@ mod tests {
         assert_eq!(effective_uid(status), Some(0));
         assert_eq!(effective_uid("Uid:\t1000\t1000\t1000\t1000\n"), Some(1000));
         assert_eq!(effective_uid("Name: x\n"), None);
+    }
+
+    #[test]
+    fn dns_question_name() {
+        let q = b"\x07example\x03com\x00\x00\x01\x00\x01";
+        assert_eq!(dns_name(q).as_deref(), Some("example.com"));
+        assert_eq!(dns_name(b"\x00"), None);
+        assert_eq!(dns_name(b"\xc0\x0c"), None);
+        assert_eq!(dns_name(b"\x05ab"), None, "nothing whole");
+        assert_eq!(
+            dns_name(b"\x07example\x03org\x05lo\x00\x00\x00").as_deref(),
+            Some("example.org…"),
+            "cut mid-label"
+        );
     }
 }
