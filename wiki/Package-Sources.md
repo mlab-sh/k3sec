@@ -66,8 +66,11 @@ Package databases over 64 MiB are refused (corrupt or hostile).
 
 A bounded walk of the usual app directories: `/app`, `/usr/src/app`, `/srv`,
 `/opt`, `/home`, `/root`, `/var/www`, `/workspace`, `/code`, `/usr/local/bin`,
-`/usr/local/lib`, plus the working directory of each container process (`/var/lib/ghost`, `/usr/src/redmine`). Depth 6, 200 000 directory entries in total, symlinks not
-followed, `.git` / `__pycache__` / `.cache` skipped. `node_modules` is read
+`/usr/local/lib`, the PATH directories and `/usr/local/go` (for Go and Rust
+binaries, read by their build info section only), plus the working directory of each container process (`/var/lib/ghost`, `/usr/src/redmine`). Depth 6, 200 000 directory entries in total, symlinks not
+followed, `.git` / `__pycache__` / `.cache` / `testdata` skipped, and the Go
+toolchain's own sources (`/usr/local/go/src`): their `go.sum` lists what the
+toolchain was built with, covered by its `stdlib` version. `node_modules` is read
 through its hidden `node_modules/.package-lock.json` (npm ≥ 7) when there is
 one; otherwise (Yarn, npm's global tree) through each module's `package.json`,
 scoped and nested ones included, 20 000 modules at most (Ghost: 2 301).

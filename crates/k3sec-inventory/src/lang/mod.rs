@@ -32,8 +32,27 @@ const ROOTS: &[&str] = &[
     "/code",
     "/usr/local/bin",
     "/usr/local/lib",
+    // Go and Rust binaries anywhere on the PATH, running or not: only their
+    // build info section is read (mongosh in /usr/bin, the Go toolchain).
+    "/usr/local/go",
+    "/usr/bin",
+    "/usr/sbin",
+    "/bin",
+    "/sbin",
+    "/usr/libexec",
 ];
-const SKIP_DIRS: &[&str] = &[".git", "__pycache__", ".cache", "proc", "sys", "dev"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "__pycache__",
+    ".cache",
+    "proc",
+    "sys",
+    "dev",
+    "testdata",
+];
+/// Source trees whose lockfiles describe what vendored code was built with,
+/// not what is installed (the Go toolchain's own sources).
+const SKIP_PATHS: &[&str] = &["/usr/local/go/src", "/usr/local/go/test"];
 
 /// Bounds on the lockfile / binary walk.
 #[derive(Debug, Clone)]
@@ -253,7 +272,9 @@ impl Walk<'_> {
                     } else {
                         self.node_trees.push(child);
                     }
-                } else if !SKIP_DIRS.contains(&name.as_str()) {
+                } else if !SKIP_DIRS.contains(&name.as_str())
+                    && !SKIP_PATHS.contains(&child.as_str())
+                {
                     self.dir(&child, depth + 1);
                 }
             } else if meta.is_file() {
@@ -304,6 +325,21 @@ mod tests {
         );
         assert!(pkgs.iter().any(|p| p.purl == "pkg:pypi/six@1.16.0"));
         assert_eq!(pkgs.len(), 2);
+    }
+
+    #[test]
+    fn toolchain_sources_and_testdata_are_not_inventoried() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lockfiles");
+        for d in ["usr/local/go/src/cmd/vendor/x", "app/pkg/testdata"] {
+            std::fs::create_dir_all(dir.path().join(d)).unwrap();
+            std::fs::copy(
+                fx.join("v3/package-lock.json"),
+                dir.path().join(d).join("package-lock.json"),
+            )
+            .unwrap();
+        }
+        assert!(scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default()).is_empty());
     }
 
     #[test]
