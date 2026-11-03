@@ -219,6 +219,7 @@ cache.
 | `--min-severity <unknown\|low\|medium\|high\|critical>` | Hide lower severities | all |
 | `--only-loaded` | Only vulns in loaded code | off |
 | `--kev-only` | Only known-exploited vulns (CISA / EU KEV) | off |
+| `--vex <PATH>` | OpenVEX file or directory: findings stated `not_affected` / `fixed` are dropped | none |
 | `--mlab-url <URL>` | vuln.mlab.sh base URL, or an on-prem mlab | `https://vuln.mlab.sh` |
 | `--no-cache` | Don't read the cache (still refreshes it) | off |
 | `--cache-ttl <SECS>` | Validity of cached results per digest | 21600 (6 h) |
@@ -227,3 +228,20 @@ cache.
 
 Environment: `MLAB_API_KEY` (optional, never logged), `XDG_CACHE_HOME`,
 `NODE_NAME`, `NO_COLOR`, `RUST_LOG`.
+
+## Vendor VEX (Docker Hardened Images)
+
+Hardened-image vendors state which CVEs do not affect their packages. Docker
+publishes the statements for its Hardened Images as OpenVEX in
+`github.com/docker-hardened-images/advisories` (`vex/<image>/`). k3sec does
+not fetch them (in a cluster it reaches nothing but the Kubernetes API); point
+it at a copy:
+
+```bash
+git clone --depth 1 https://github.com/docker-hardened-images/advisories
+sudo k3sec vulns --vex advisories/vex
+```
+
+On `dhi.io/nginx:1.31.8-debian13`: 33 findings (17 loaded) without, 5 (none
+loaded) with its VEX, "28 findings dropped by VEX". A DHI image scanned
+without `--vex` carries the warning `its VEX is not applied`.

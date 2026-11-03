@@ -10,6 +10,7 @@ use clap::Args;
 
 use k3sec_core::{docker, NodeVersions, OutputFormat, PodContainer};
 use k3sec_inventory::render::{self, Filter};
+use k3sec_inventory::vex::{is_hardened_image, Vex};
 use k3sec_inventory::{
     check_root_access, group_by_image, match_images, node_inventory, pids_by_container, scan_image,
     Cache, ImageInventory, LangLimits, MlabClient, VulnSeverity,
@@ -97,6 +98,12 @@ pub struct VulnsArgs {
     /// Only vulns in CISA / EU KEV (known exploited).
     #[arg(long)]
     pub kev_only: bool,
+
+    /// OpenVEX statements to apply: a file or a directory of them (e.g. a
+    /// clone of github.com/docker-hardened-images/advisories, `vex/`).
+    /// Findings stated `not_affected` or `fixed` are dropped.
+    #[arg(long, value_name = "PATH")]
+    pub vex: Option<PathBuf>,
 }
 
 pub async fn inventory(
@@ -122,11 +129,28 @@ pub async fn inventory(
 
 pub async fn vulns(kubeconfig: Option<PathBuf>, docker: bool, args: VulnsArgs) -> Result<()> {
     let client = args.mlab.client()?;
+    let vex = args.vex.as_deref().map(Vex::load).transpose()?;
     let (node, mut images) = collect(kubeconfig, docker, &args.scope).await?;
     if let Some(n) = &node {
         images.push(node_inventory(n, args.scope.match_kernel));
     }
-    let vulns = match_images(&client, &args.mlab.cache(), &images).await;
+    let mut vulns = match_images(&client, &args.mlab.cache(), &images).await;
+    for (inv, v) in images.iter_mut().zip(vulns.iter_mut()) {
+        match &vex {
+            Some(vex) => {
+                let n = vex.apply(inv, v);
+                if n > 0 {
+                    inv.warnings.push(format!(
+                        "{n} findings dropped by VEX (not_affected / fixed)"
+                    ));
+                }
+            }
+            None if is_hardened_image(inv) => inv.warnings.push(
+                "Docker Hardened Image: its VEX is not applied (--vex <advisories/vex>)".into(),
+            ),
+            None => {}
+        }
+    }
     let results: Vec<_> = images.iter().zip(vulns.iter()).collect();
     let filter = Filter {
         min_severity: args.min_severity,

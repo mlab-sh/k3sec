@@ -26,6 +26,7 @@ pub mod reach;
 pub mod render;
 pub mod rootfs;
 pub mod sbom;
+pub mod vex;
 pub mod vuln;
 pub mod watch;
 pub mod wire;
