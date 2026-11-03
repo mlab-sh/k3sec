@@ -2148,6 +2148,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "flate2",
  "futures",
  "k3sec-api",
  "k3sec-core",

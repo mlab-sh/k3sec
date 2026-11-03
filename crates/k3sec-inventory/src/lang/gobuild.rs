@@ -57,10 +57,11 @@ pub fn parse(bin: &[u8]) -> Option<GoBuild> {
     })
 }
 
-/// The `.go.buildinfo` section of a 64-bit little-endian ELF, read alone:
-/// a Go binary can weigh hundreds of MiB (Vault: 550), its build info a few
-/// KiB. `None` when the file is no such ELF or has no section table.
-pub fn section(path: &Path) -> Option<Vec<u8>> {
+/// One section of a 64-bit little-endian ELF, read alone (`.go.buildinfo`,
+/// cargo-auditable's `.dep-v0`): a Go binary can weigh hundreds of MiB
+/// (Vault: 550), its build info a few KiB. `None` when the file is no such
+/// ELF, has no section table or no such section.
+pub fn section(path: &Path, wanted: &str) -> Option<Vec<u8>> {
     let f = File::open(path).ok()?;
     let read = |off: u64, len: u64| -> Option<Vec<u8>> {
         let mut buf = vec![0u8; usize::try_from(len).ok()?];
@@ -92,7 +93,7 @@ pub fn section(path: &Path) -> Option<Vec<u8>> {
     (0..shnum).find_map(|i| {
         let h = header(i);
         let name = names.get(u32::from_le_bytes(h[0..4].try_into().unwrap()) as usize..)?;
-        if !name.starts_with(b".go.buildinfo\0") {
+        if !(name.starts_with(wanted.as_bytes()) && name.get(wanted.len()) == Some(&0)) {
             return None;
         }
         let (off, size) = (u64_at(h, 0x18), u64_at(h, 0x20));
@@ -191,7 +192,7 @@ mod tests {
         let path = dir.path().join("vault");
         std::fs::write(&path, fake_elf(info)).unwrap();
 
-        let sec = section(&path).unwrap();
+        let sec = section(&path, ".go.buildinfo").unwrap();
         assert!(sec.starts_with(MAGIC));
         assert!(sec.len() < 4096, "the section, not the binary");
         let got = parse(&sec).unwrap();
@@ -199,7 +200,7 @@ mod tests {
         assert_eq!(got.deps, [("golang.org/x/net".into(), "v0.17.0".into())]);
 
         std::fs::write(&path, b"#!/bin/sh\n").unwrap();
-        assert!(section(&path).is_none());
+        assert!(section(&path, ".go.buildinfo").is_none());
     }
 
     #[test]

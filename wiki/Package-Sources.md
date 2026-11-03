@@ -84,13 +84,14 @@ scoped and nested ones included, 20 000 modules at most (Ghost: 2 301).
 | `composer.lock` | Packagist | `packages` + `packages-dev` |
 | `Gemfile.lock` | RubyGems | top-level `GEM` specs |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |
+| **Rust binaries** (`cargo auditable`) | crates.io | the `.dep-v0` section (zlib JSON): every registry crate (`uv`: 481, a conda extension: 514). Rust libraries a distro package ships (`librav1e`) are left to the package |
 | **Java archives** (`.jar`, `.war`) | Maven | `META-INF/maven/<group>/<artifact>/pom.properties`, in the archive and in the jars it nests (`BOOT-INF/lib/`, `WEB-INF/lib/`) |
 
 Lockfiles over 32 MiB are skipped. Go build info and Java archives are read
 from what runs first (`/proc/<pid>/exe`, and the jars a JVM holds open in
 `/proc/<pid>/fd`, which are therefore **loaded**), then from executables and
-archives met in the walk, 512 at most. Of an ELF only its `.go.buildinfo`
-section is read, whatever the binary's size (Vault: 550 MiB, 496 modules);
+archives met in the walk, 2 048 at most. Of an ELF only its `.go.buildinfo`
+or `.dep-v0` section is read, whatever the binary's size (Vault: 550 MiB, 496 modules);
 other files are read whole, 256 MiB at most. A jar without
 `pom.properties` is not identified: Tomcat's own `catalina.jar` and the like.
 

@@ -7,6 +7,7 @@ pub mod jar;
 pub mod lockfiles;
 pub mod npm;
 pub mod python;
+pub mod rust;
 
 use std::collections::HashSet;
 use std::fs;
@@ -55,7 +56,7 @@ impl Default for LangLimits {
             max_lockfile_size: 32 * 1024 * 1024,
             max_binary_size: 256 * 1024 * 1024,
             // A JVM keeps a few hundred jars open (Elasticsearch: ~250).
-            max_binaries: 512,
+            max_binaries: 2048,
         }
     }
 }
@@ -160,7 +161,14 @@ pub fn scan(
             continue;
         };
         // An ELF's build info section alone, whatever the binary's size.
-        let bytes = match gobuild::section(&host) {
+        // A Rust binary built with cargo-auditable lists its crates.
+        if let Some(deps) = gobuild::section(&host, ".dep-v0") {
+            for (name, version) in rust::crates(&deps) {
+                push("crates.io", &name, &version, path, Vec::new());
+            }
+            continue;
+        }
+        let bytes = match gobuild::section(&host, ".go.buildinfo") {
             Some(section) => section,
             None => match read_file_limited(&host, limits.max_binary_size) {
                 Ok(b) => b,
