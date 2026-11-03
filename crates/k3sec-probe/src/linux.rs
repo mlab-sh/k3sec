@@ -152,7 +152,7 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     if config.kinds.allows(ProbeKind::Exit) {
         attach_raw_tracepoint(ebpf, "k3sec_exit", "sched_process_exit")?;
     }
-    if config.kinds.allows(ProbeKind::FileWrite) {
+    if config.kinds.allows(ProbeKind::FileWrite) || config.kinds.allows(ProbeKind::SecretRead) {
         // An internal function: a kernel may have inlined it. Then no
         // file_write, but exec and connect keep going.
         if let Err(e) = attach_kprobe(ebpf, "k3sec_openat", "do_sys_openat2") {
@@ -217,12 +217,16 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         kind::CONNECT => ProbeKind::Connect,
         kind::FILE_WRITE => ProbeKind::FileWrite,
         kind::EXIT => ProbeKind::Exit,
+        kind::SECRET_READ => ProbeKind::SecretRead,
         _ => {
             stats.malformed.fetch_add(1, Ordering::Relaxed);
             return None;
         }
     };
     if !config.kinds.allows(probe_kind) {
+        return None;
+    }
+    if probe_kind == ProbeKind::SecretRead && !is_credential(&cstr(&ev.filename[..FILENAME_LEN])) {
         return None;
     }
     if probe_kind == ProbeKind::Connect && dest_ip(ev).is_some_and(is_local_destination) {
@@ -313,6 +317,14 @@ fn build_event(
             )
         }
         ProbeKind::Exit => ("exit", Severity::Info, format!("exit {comm}")),
+        ProbeKind::SecretRead => {
+            let path = cstr(&ev.filename[..FILENAME_LEN]);
+            (
+                "secret_read",
+                Severity::Warning,
+                format!("read {path} ({comm})"),
+            )
+        }
     };
 
     let mut builder = SecEvent::builder(Source::Ebpf, at)
@@ -365,7 +377,7 @@ fn maybe_request_scan(
     let trigger = match probe_kind {
         ProbeKind::Exec => ScanTrigger::Exec,
         ProbeKind::FileWrite => ScanTrigger::FileWrite,
-        ProbeKind::Connect | ProbeKind::Exit => return, // no bytes to scan
+        ProbeKind::Connect | ProbeKind::Exit | ProbeKind::SecretRead => return, // nothing to scan
     };
     let req = ScanRequest {
         trigger,
@@ -409,6 +421,24 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// A `secret_read` path worth reporting: the kernel matched prefixes; under
+/// `/home/` only users' credential directories count.
+fn is_credential(path: &str) -> bool {
+    match path.strip_prefix("/home/") {
+        Some(rest) => [
+            "/.ssh/",
+            "/.aws/",
+            "/.kube/",
+            "/.docker/config.json",
+            "/.config/gcloud/",
+            "/.azure/",
+        ]
+        .iter()
+        .any(|d| rest.contains(d)),
+        None => true,
+    }
 }
 
 /// What is read about a record's process while it still runs.
@@ -647,7 +677,7 @@ fn payload(
         "container_id": container_id,
     });
     match probe_kind {
-        ProbeKind::Exec | ProbeKind::FileWrite => {
+        ProbeKind::Exec | ProbeKind::FileWrite | ProbeKind::SecretRead => {
             obj["path"] = serde_json::json!(cstr(&ev.filename[..FILENAME_LEN]));
         }
         ProbeKind::Connect => {
@@ -757,5 +787,15 @@ mod tests {
             Some(TempDir),
             "path gone, the link tells"
         );
+    }
+
+    #[test]
+    fn credential_paths() {
+        assert!(is_credential(
+            "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        ));
+        assert!(is_credential("/home/app/.ssh/id_ed25519"));
+        assert!(is_credential("/home/app/.docker/config.json"));
+        assert!(!is_credential("/home/app/notes.txt"));
     }
 }

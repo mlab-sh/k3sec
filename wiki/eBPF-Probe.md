@@ -9,6 +9,7 @@ came from:
 | `connect` | kprobes `tcp_v4_connect`, `tcp_v6_connect` | info | outbound TCP, except to `0.0.0.0`, `::` and loopback (health checks) |
 | `file_write` | kprobe `do_sys_openat2` (every `open`, `openat`, `openat2`, `creat` with write flags) | warning | paths under `/etc/`, `/usr/bin/`, `/root/`, `/var/run/secrets` (in-kernel) |
 | `exit` | raw tracepoint `sched_process_exit` | info | a process (not a thread) ends; only with `--kind exit` |
+| `secret_read` | kprobe `do_sys_openat2`, read-only opens | warning | service account tokens, `/etc/shadow`, `/etc/kubernetes/`, kubelet PKI, `.ssh` / `.aws` / `.kube` / `.docker` / gcloud / Azure credentials of `root` and of `/home/*` users (in-kernel prefixes, `/home` narrowed in userspace). Kubernetes clients read their token too: lab background, 1 read in 40 s |
 
 ```bash
 sudo k3sec watch --ebpf

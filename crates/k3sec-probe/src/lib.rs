@@ -38,6 +38,8 @@ pub enum ProbeKind {
     /// A process ends. Only when asked for (`--kind exit`): it doubles the
     /// volume of exec.
     Exit,
+    /// Read-open of a credential (service account token, SSH or cloud keys).
+    SecretRead,
 }
 
 impl ProbeKind {
@@ -48,6 +50,7 @@ impl ProbeKind {
             ProbeKind::Connect => "connect",
             ProbeKind::FileWrite => "file_write",
             ProbeKind::Exit => "exit",
+            ProbeKind::SecretRead => "secret_read",
         }
     }
 }

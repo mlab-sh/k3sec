@@ -39,6 +39,23 @@ static DROPS: Array<u64> = Array::with_max_entries(1, 0);
 /// Sensitive path prefixes matched in-kernel for `file_write`.
 const SENSITIVE_PREFIXES: [&[u8]; 4] = [b"/etc/", b"/usr/bin/", b"/root/", b"/var/run/secrets"];
 
+/// Credentials, matched in-kernel for `secret_read` (read-only opens). Under
+/// `/home/` userspace keeps only the credential directories.
+const SECRET_PREFIXES: [&[u8]; 12] = [
+    b"/var/run/secrets/kubernetes.io/",
+    b"/run/secrets/kubernetes.io/",
+    b"/etc/shadow",
+    b"/etc/kubernetes/",
+    b"/var/lib/kubelet/pki/",
+    b"/root/.ssh/",
+    b"/root/.aws/",
+    b"/root/.kube/",
+    b"/root/.docker/",
+    b"/root/.config/gcloud/",
+    b"/root/.azure/",
+    b"/home/",
+];
+
 // ---------------------------------------------------------------------------
 // execve
 // ---------------------------------------------------------------------------
@@ -132,9 +149,7 @@ fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
     }
     // `struct open_how` starts with `u64 flags`.
     let flags: u64 = unsafe { bpf_probe_read_kernel(how) }.unwrap_or(0);
-    if !is_write_open(flags) {
-        return Ok(());
-    }
+    let write = is_write_open(flags);
 
     let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
         bump_drops();
@@ -143,15 +158,24 @@ fn try_openat(ctx: &ProbeContext) -> Result<(), i64> {
     let e = entry.as_mut_ptr();
 
     // SAFETY: as in `try_execve`. We read the path into the slot, then keep the
-    // event only if it targets a sensitive prefix, else discard it.
+    // event only if it targets a sensitive prefix (writes) or a credential
+    // (reads), else discard it.
     unsafe {
-        fill_common(e, kind::FILE_WRITE);
+        fill_common(
+            e,
+            if write {
+                kind::FILE_WRITE
+            } else {
+                kind::SECRET_READ
+            },
+        );
         let read = bpf_probe_read_user_str_bytes(filename_ptr, &mut (*e).filename);
-        let sensitive = match read {
-            Ok(bytes) => is_sensitive(bytes),
+        let keep = match read {
+            Ok(bytes) if write => matches_any(bytes, &SENSITIVE_PREFIXES),
+            Ok(bytes) => matches_any(bytes, &SECRET_PREFIXES),
             Err(_) => false,
         };
-        if !sensitive {
+        if !keep {
             entry.discard(0);
             return Ok(());
         }
@@ -167,10 +191,10 @@ fn is_write_open(flags: u64) -> bool {
     acc == 1 || acc == 2 || (flags & (0o100 | 0o1000 | 0o2000)) != 0
 }
 
-fn is_sensitive(path: &[u8]) -> bool {
+fn matches_any(path: &[u8], prefixes: &[&[u8]]) -> bool {
     let mut p = 0;
-    while p < SENSITIVE_PREFIXES.len() {
-        if starts_with(path, SENSITIVE_PREFIXES[p]) {
+    while p < prefixes.len() {
+        if starts_with(path, prefixes[p]) {
             return true;
         }
         p += 1;
