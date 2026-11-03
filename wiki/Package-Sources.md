@@ -85,7 +85,7 @@ scoped and nested ones included, 20 000 modules at most (Ghost: 2 301).
 | `Gemfile.lock` | RubyGems | top-level `GEM` specs |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |
 | **Rust binaries** (`cargo auditable`) | crates.io | the `.dep-v0` section (zlib JSON): every registry crate (`uv`: 481, a conda extension: 514). Rust libraries a distro package ships (`librav1e`) are left to the package |
-| **Java archives** (`.jar`, `.war`) | Maven | `META-INF/maven/<group>/<artifact>/pom.properties`, in the archive and in the jars it nests (`BOOT-INF/lib/`, `WEB-INF/lib/`) |
+| **Java archives** (`.jar`, `.war`, `.ear`, `.hpi`, `.jpi`) | Maven | `META-INF/maven/<group>/<artifact>/pom.properties`, in the archive and in the archives it nests, two levels deep (`BOOT-INF/lib/`, `WEB-INF/lib/`). Jenkins plugins: `Group-Id` / `Short-Name` / `Plugin-Version` of the manifest. Without either, the file name and `Implementation-Version` / `Bundle-Version`; the group from a short list of projects that publish no `pom.properties` (Spring, Ant, Groovy, Guice, JNA, dom4j, Lucene, Elasticsearch, Kotlin), else listed without a group and not matched. Spring Boot app: Spring4Shell (`CVE-2022-22965`) found this way |
 
 Lockfiles over 32 MiB are skipped. Go build info and Java archives are read
 from what runs first (`/proc/<pid>/exe`, and the jars a JVM holds open in

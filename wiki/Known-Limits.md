@@ -21,8 +21,10 @@ What k3sec does **not** see yet, and how it shows up.
   the official images use (`/usr/local`, `/opt/java/openjdk`). Elsewhere, or
   for other software built from source, only the libraries it loads are seen.
   Go binaries are the exception, through their build info.
-- **Java archives without Maven metadata.** Jars are identified by their
-  `pom.properties`; a hand-built jar (Tomcat's `catalina.jar`) is not.
+- **Java archives without Maven metadata.** A jar with no `pom.properties` is
+  named from its file and manifest; its CVEs are matched only when its group
+  is known (a short built-in list), never guessed. Tomcat's `catalina.jar`
+  and the Elastic APM agent's internal plugins stay unmatched.
 - **Python outside the walked roots.** Distributions are read from their
   `dist-info` / `egg-info` under the usual roots (`/usr/local/lib`, `/opt`,
   `/home`…); a virtualenv elsewhere is missed. Pure-Python code is never

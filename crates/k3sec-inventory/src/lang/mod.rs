@@ -176,7 +176,8 @@ pub fn scan(
             },
         };
         if bytes.starts_with(b"PK\x03\x04") {
-            for (name, version) in jar::parse(&bytes) {
+            let file_name = path.rsplit('/').next().unwrap_or(path);
+            for (name, version) in jar::parse(&bytes, file_name) {
                 push("Maven", &name, &version, path, Vec::new());
             }
             continue;
@@ -193,11 +194,19 @@ pub fn scan(
             }
         }
     }
+    // A jar named from its file alone, its group unknown: listed, not matched.
+    for p in out.iter_mut() {
+        if p.purl.starts_with("pkg:maven/") && !p.name.contains(':') {
+            p.coordinate = None;
+        }
+    }
     out
 }
 
 pub fn is_java_archive(path: &str) -> bool {
-    path.ends_with(".jar") || path.ends_with(".war")
+    [".jar", ".war", ".ear", ".hpi", ".jpi"]
+        .iter()
+        .any(|e| path.ends_with(e))
 }
 
 struct Walk<'a> {
