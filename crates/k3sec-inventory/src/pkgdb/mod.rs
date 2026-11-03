@@ -1,6 +1,7 @@
 //! OS package databases (dpkg, apk, rpm) → [`Package`]s with purls,
 //! vulnerability coordinates and file lists.
 
+pub mod alpm;
 pub mod apk;
 pub mod dpkg;
 #[cfg(feature = "rpm")]
@@ -34,6 +35,7 @@ pub enum PkgDb {
     Dpkg,
     Apk,
     Rpm,
+    Alpm,
 }
 
 /// Read the image's OS packages. Returns the db kind found (if any) and
@@ -44,6 +46,8 @@ pub fn read(fs: &Rootfs, os: Option<&OsRelease>) -> (Vec<Package>, Vec<String>) 
         Some((PkgDb::Dpkg, p))
     } else if let Some(p) = apk::read(fs) {
         Some((PkgDb::Apk, p))
+    } else if let Some(p) = alpm::read(fs) {
+        Some((PkgDb::Alpm, p))
     } else {
         read_rpm(fs, &mut warnings).map(|p| (PkgDb::Rpm, p))
     };
@@ -136,6 +140,7 @@ fn to_package(db: PkgDb, os: &OsRelease, ecosystem: Option<&str>, p: OsPackage) 
         PkgDb::Dpkg => "deb",
         PkgDb::Apk => "apk",
         PkgDb::Rpm => "rpm",
+        PkgDb::Alpm => "alpm",
     };
     let mut quals = vec![("arch", p.arch.clone())];
     // rpm: epoch moves out of the purl version into its own qualifier.

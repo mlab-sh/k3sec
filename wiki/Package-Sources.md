@@ -28,6 +28,7 @@ Distroless images report `PRETTY_NAME="Distroless"` with `ID=debian`.
 | **dpkg** | `/var/lib/dpkg/status` | `info/<pkg>.list`, `info/<pkg>:<arch>.list` | only `Status: … installed`; `Source:` kept (`bash (5.2.15-2)` gives source name **and** version) |
 | **dpkg, distroless** | `/var/lib/dpkg/status.d/<pkg>` | `status.d/<pkg>.md5sums` | coredns on the lab |
 | **apk** | `/lib/apk/db/installed` | `F:` directory + `R:` files | `o:` origin = source package |
+| **alpm** (pacman, Arch) | `/var/lib/pacman/local/*/desc` | `files` (`%FILES%`) | `%BASE%` = source package; inventoried and in the SBOM, not matched (no Arch advisory feed) |
 | **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages`, NDB `Packages.db` (openSUSE / SLES) | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
 | **BusyBox, no package db** | `/bin/busybox` | the binary itself | version from its `BusyBox vX.Y.Z` banner, matched by CPE; only when the image has no package database (official Prometheus images) |
 | **Runtimes built from source** | `/usr/local/lib/libpython3.*`, `/usr/local/bin/{node,php,perl,redis-server}`, `libphp`, `libruby`, `/usr/local/apache2/bin/httpd`, `/opt/java/openjdk/release`, `/usr/local/go/VERSION` | the files found | version from the binary's own string (`node.js/v22.23.4`, `X-Powered-By: PHP/8.3.36`…), matched by CPE (Go as `stdlib`); a file a package owns is left to it. 18 of 45 audit images |
