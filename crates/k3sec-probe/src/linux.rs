@@ -10,7 +10,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use aya::maps::{Array, HashMap as BpfHashMap, RingBuf};
@@ -106,7 +106,7 @@ pub async fn run(
 
                 for mut ev in batch {
                     let at = chrono::Utc::now();
-                    let Some((probe_kind, container_id)) = classify(&ev, &config, &stats) else {
+                    let Some((probe_kind, container_id, repeats)) = classify(&ev, &config, &stats) else {
                         // The host's: the kernel drops its next events itself.
                         if ev.cgroup_id != 0
                             && is_host_cgroup(ev.cgroup_id)
@@ -121,7 +121,8 @@ pub async fn run(
                     }
                     fill_exec_path(&mut ev);
                     // Read now, while the process (and its mount namespace) lives.
-                    let facts = Facts::of(&ev, probe_kind, &container_id);
+                    let mut facts = Facts::of(&ev, probe_kind, &container_id);
+                    facts.repeats = repeats;
                     if probe_kind == ProbeKind::Privesc && facts.became_root.is_none() {
                         continue; // a credentials change that did not make it root
                     }
@@ -294,7 +295,11 @@ fn attach_kprobe(ebpf: &mut Ebpf, prog: &str, symbol: &str) -> Result<()> {
 /// The kind and container of a record worth reporting; `None` (with a counter
 /// bumped) for host processes, local connects and kind-filtered events, so
 /// only in-container, requested kinds reach the pipeline.
-fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(ProbeKind, String)> {
+fn classify(
+    ev: &Event,
+    config: &ProbeConfig,
+    stats: &DropStats,
+) -> Option<(ProbeKind, String, u32)> {
     let probe_kind = match ev.kind {
         kind::EXEC => ProbeKind::Exec,
         kind::CONNECT => ProbeKind::Connect,
@@ -322,9 +327,6 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
     if probe_kind == ProbeKind::SecretRead && !is_credential(&cstr(&ev.filename[..FILENAME_LEN])) {
         return None;
     }
-    if probe_kind == ProbeKind::Dns && !first_query(ev) {
-        return None; // the same name, from the same cgroup, moments ago
-    }
     if probe_kind == ProbeKind::Connect && dest_ip(ev).is_some_and(is_local_destination) {
         stats.local.fetch_add(1, Ordering::Relaxed);
         return None;
@@ -338,7 +340,61 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         stats.host.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    Some((probe_kind, container_id))
+    // The same destination or name again from the same container: once per
+    // window, with how many were held back since.
+    let repeats = match repeat_key(ev, probe_kind) {
+        Some(key) => SEEN.first_in_window(key, Instant::now())?,
+        None => 0,
+    };
+    Some((probe_kind, container_id, repeats))
+}
+
+/// How long a connect / DNS / UDP destination stays reported for a container.
+const REPEAT_WINDOW: Duration = Duration::from_secs(300);
+/// Keys kept before the expired ones are pruned.
+const REPEAT_KEYS: usize = 16_384;
+
+static SEEN: Repeats = Repeats(std::sync::Mutex::new(None));
+
+/// What makes two events "the same" for [`Repeats`]: the cgroup and the
+/// destination (address and port, or the DNS name).
+fn repeat_key(ev: &Event, kind: ProbeKind) -> Option<(u64, String)> {
+    let what = match kind {
+        ProbeKind::Connect | ProbeKind::Udp => format_dest(ev),
+        ProbeKind::Dns => dns_name(&ev.filename)?,
+        _ => return None,
+    };
+    Some((ev.cgroup_id, format!("{kind:?} {what}")))
+}
+
+/// Per key: when it was last reported, and how many were held back since.
+type RepeatMap = std::collections::HashMap<(u64, String), (Instant, u32)>;
+struct Repeats(std::sync::Mutex<Option<RepeatMap>>);
+
+impl Repeats {
+    /// `Some(held back since the last report)` when `key` is due a report.
+    fn first_in_window(&self, key: (u64, String), now: Instant) -> Option<u32> {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = guard.get_or_insert_with(Default::default);
+        if seen.len() >= REPEAT_KEYS {
+            seen.retain(|_, (at, _)| now.duration_since(*at) < REPEAT_WINDOW);
+        }
+        match seen.get_mut(&key) {
+            Some((at, held)) if now.duration_since(*at) < REPEAT_WINDOW => {
+                *held += 1;
+                None
+            }
+            Some((at, held)) => {
+                let repeats = *held;
+                (*at, *held) = (now, 0);
+                Some(repeats)
+            }
+            None => {
+                seen.insert(key, (now, 0));
+                Some(0)
+            }
+        }
+    }
 }
 
 /// Turn a classified kernel event into a [`SecEvent`], with its pod when known.
@@ -503,6 +559,9 @@ fn build_event(
         builder = builder.meta("cryptominer", why);
     }
     builder = builder.meta("mitre", mitre(ev, probe_kind, facts).join(","));
+    if facts.repeats > 0 {
+        builder = builder.meta("repeats", facts.repeats.to_string());
+    }
     if let Some((ppid, _)) = facts.ancestors.first() {
         let chain: Vec<&str> = facts
             .ancestors
@@ -717,23 +776,6 @@ fn dns_name(question: &[u8]) -> Option<String> {
     (!labels.is_empty()).then(|| format!("{}…", labels.join(".")))
 }
 
-/// Whether this cgroup has not asked for this name in the last 10 s (a
-/// resolver asks A and AAAA, retries, every client asks again).
-fn first_query(ev: &Event) -> bool {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::time::Instant;
-    static SEEN: Mutex<Option<HashMap<(u64, String), Instant>>> = Mutex::new(None);
-    let Some(name) = dns_name(&ev.filename) else {
-        return true;
-    };
-    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    let seen = seen.get_or_insert_with(HashMap::new);
-    let now = Instant::now();
-    seen.retain(|_, at| now.duration_since(*at) < Duration::from_secs(10));
-    seen.insert((ev.cgroup_id, name), now).is_none()
-}
-
 /// The effective uid in `/proc/<pid>/status` (`Uid: real effective saved fs`).
 fn effective_uid(status: &str) -> Option<u32> {
     status
@@ -825,6 +867,8 @@ struct Facts {
     /// A credentials change made a non-root process root: its new effective
     /// uid and the binary it runs.
     became_root: Option<String>,
+    /// The same connect / DNS / UDP held back since it was last reported.
+    repeats: u32,
 }
 
 /// Where an exec'd binary lives, when that is itself a signal.
@@ -1303,5 +1347,23 @@ mod tests {
             ["T1552.001"]
         );
         assert!(mitre(&Event::zeroed(), ProbeKind::Connect, &Facts::default()).is_empty());
+    }
+
+    #[test]
+    fn repeats_once_per_window_with_the_count_held_back() {
+        let r = Repeats(std::sync::Mutex::new(None));
+        let t0 = Instant::now();
+        let key = || (7, "Connect 1.2.3.4:443".to_string());
+        assert_eq!(r.first_in_window(key(), t0), Some(0));
+        for s in 1..=3 {
+            assert_eq!(r.first_in_window(key(), t0 + Duration::from_secs(s)), None);
+        }
+        assert_eq!(
+            r.first_in_window((8, key().1), t0),
+            Some(0),
+            "another container"
+        );
+        assert_eq!(r.first_in_window(key(), t0 + REPEAT_WINDOW), Some(3));
+        assert_eq!(r.first_in_window(key(), t0 + REPEAT_WINDOW), None);
     }
 }
