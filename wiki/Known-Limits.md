@@ -34,8 +34,14 @@ What k3sec does **not** see yet, and how it shows up.
 
 ## Matching
 
-- **Distros**: Debian, Ubuntu, Alpine, Rocky and Alma are matched. Others are
+- **Distros**: Debian, Ubuntu, Alpine, Rocky, Alma, RHEL / UBI and
+  Hummingbird are matched (Red Hat streams from the image's `CPE_NAME`; RHEL
+  8/9 ask both `baseos` and `appstream`). Oracle Linux has no feed of its own
+  and is matched against RHEL advisories, with a warning. Others are
   inventoried with a warning and their OS packages not matched.
+- **Red Hat: fixed CVEs only.** The Red Hat feed holds errata (RHSA/RHBA), so
+  a CVE Red Hat has not fixed yet (`not-fixed`, `wont-fix` in its VEX) is not
+  reported: a patched `ubi9-minimal` shows 0 where grype lists 212 unfixed.
 - **Source-package noise.** Distro advisories are filed per source package: a
   dormant `linux-libc-dev` (kernel headers) carries every Debian kernel CVE
   (httpd: 9492 vulns, 104 loaded). `--only-loaded` cuts it.

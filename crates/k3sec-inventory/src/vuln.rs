@@ -339,13 +339,53 @@ async fn scan_all(
     source: &dyn VulnSource,
     coords: &[Coordinate],
 ) -> Result<Vec<Option<Vec<Advisory>>>> {
-    let mut all = Vec::with_capacity(coords.len());
-    for chunk in coords.chunks(CHUNK) {
+    // RHEL 8/9 advisories are filed per repository and an rpmdb doesn't say
+    // which one a package came from: a `::baseos` coordinate also asks `::appstream`.
+    let mut asked = Vec::with_capacity(coords.len());
+    let mut owner = Vec::with_capacity(coords.len());
+    for (i, c) in coords.iter().enumerate() {
+        asked.push(c.clone());
+        owner.push(i);
+        if let Some(app) = appstream_twin(c) {
+            asked.push(app);
+            owner.push(i);
+        }
+    }
+    let mut all: Vec<Option<Vec<Advisory>>> = vec![None; coords.len()];
+    for (chunk, owners) in asked.chunks(CHUNK).zip(owner.chunks(CHUNK)) {
         let mut answers = source.scan(chunk).await?;
         answers.resize(chunk.len(), None); // a short answer is "not scanned"
-        all.extend(answers);
+        for (answer, &i) in answers.into_iter().zip(owners) {
+            if let Some(advs) = answer {
+                all[i].get_or_insert_with(Vec::new).extend(advs);
+            }
+        }
     }
     Ok(all)
+}
+
+fn appstream_twin(c: &Coordinate) -> Option<Coordinate> {
+    let Coordinate::Eco {
+        ecosystem,
+        name,
+        version,
+    } = c
+    else {
+        return None;
+    };
+    let stream = ecosystem.strip_suffix("::baseos")?;
+    stream
+        .starts_with("Red Hat:")
+        .then(|| Coordinate::eco(format!("{stream}::appstream"), name, version))
+}
+
+/// Same feed product, a Red Hat repository suffix (`::appstream`) aside.
+fn same_ecosystem(advisory: &str, asked: &str) -> bool {
+    let stream = |e: &str| match e.strip_prefix("Red Hat:") {
+        Some(_) => e.split("::").next().unwrap_or(e).to_string(),
+        None => e.to_string(),
+    };
+    advisory == asked || stream(advisory) == stream(asked)
 }
 
 /// The KEV catalogue, from the cache or the source; `None` if unavailable.
@@ -550,7 +590,7 @@ fn fixed_version(adv: &Advisory, coord: &Coordinate, installed: &str) -> Option<
     let mut best: Option<String> = None;
     for aff in &adv.affected {
         if let (Some(p), Some(eco), Some(name)) = (&aff.package, eco, name) {
-            if p.ecosystem != eco || p.name != name {
+            if !same_ecosystem(&p.ecosystem, eco) || p.name != name {
                 continue;
             }
         }
@@ -618,6 +658,74 @@ mod tests {
 
     fn adv(json: serde_json::Value) -> Advisory {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// Answers only for one ecosystem, records what was asked.
+    struct StreamSource {
+        answers_for: &'static str,
+        asked: std::sync::Mutex<Vec<Coordinate>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VulnSource for StreamSource {
+        fn id(&self) -> &str {
+            "stream"
+        }
+        async fn scan(&self, coords: &[Coordinate]) -> Result<Vec<Option<Vec<Advisory>>>> {
+            self.asked.lock().unwrap().extend(coords.iter().cloned());
+            Ok(coords
+                .iter()
+                .map(|c| match c {
+                    Coordinate::Eco { ecosystem, .. } if ecosystem == self.answers_for => {
+                        Some(vec![adv(serde_json::json!({
+                            "id": "RHSA-2024:0001",
+                            "aliases": ["CVE-2024-0001"],
+                            "affected": [{
+                                "package": {"ecosystem": self.answers_for, "name": "nginx"},
+                                "ranges": [{"type": "ECOSYSTEM", "events": [
+                                    {"introduced": "0"}, {"fixed": "1:1.20.1-16.el9"}]}]
+                            }]
+                        }))])
+                    }
+                    _ => Some(Vec::new()),
+                })
+                .collect())
+        }
+        async fn cve(&self, _id: &str) -> Result<Option<CveInfo>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn rhel_baseos_also_asks_appstream() {
+        let src = StreamSource {
+            answers_for: "Red Hat:enterprise_linux:9::appstream",
+            asked: Default::default(),
+        };
+        let nginx = Coordinate::eco(
+            "Red Hat:enterprise_linux:9::baseos",
+            "nginx",
+            "1:1.20.1-14.el9",
+        );
+        let debian = Coordinate::eco("Debian:12", "nginx", "1.22.1-9");
+        let got = scan_all(&src, &[nginx.clone(), debian]).await.unwrap();
+        assert_eq!(
+            src.asked.lock().unwrap().len(),
+            3,
+            "baseos, appstream, debian"
+        );
+        assert_eq!(got.len(), 2);
+        let advs = got[0].as_ref().unwrap();
+        assert_eq!(
+            advs.len(),
+            1,
+            "the appstream advisory lands on the baseos coordinate"
+        );
+        assert_eq!(
+            fixed_version(&advs[0], &nginx, "1:1.20.1-14.el9").as_deref(),
+            Some("1:1.20.1-16.el9")
+        );
+        assert!(got[1].as_ref().unwrap().is_empty());
     }
 
     #[test]

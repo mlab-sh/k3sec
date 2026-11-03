@@ -14,6 +14,10 @@ pub struct OsRelease {
     pub version_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub pretty_name: String,
+    /// `cpe:/o:redhat:enterprise_linux:9::baseos`: names the Red Hat product
+    /// stream (RHEL, UBI, Hummingbird) advisories are filed under.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cpe_name: String,
 }
 
 impl OsRelease {
@@ -37,6 +41,7 @@ impl OsRelease {
                 "ID" => os.id = v.to_ascii_lowercase(),
                 "VERSION_ID" => os.version_id = v,
                 "PRETTY_NAME" => os.pretty_name = v,
+                "CPE_NAME" => os.cpe_name = v,
                 _ => {}
             }
         }
@@ -76,7 +81,37 @@ impl OsRelease {
             "alpine" => Some(format!("Alpine:v{}", self.major_minor())),
             "rocky" => Some(format!("Rocky Linux:{}", self.major())),
             "almalinux" => Some(format!("AlmaLinux:{}", self.major())),
+            "rhel" | "hummingbird" => self.red_hat_stream(),
+            // A RHEL rebuild with the same NEVRAs and no feed of its own.
+            "ol" => Some(self.rhel_stream()),
             _ => None,
+        }
+    }
+
+    /// Whether advisories come from another distro's feed (shown as a warning).
+    pub fn borrowed_feed(&self) -> Option<&'static str> {
+        (self.id == "ol").then_some("RHEL")
+    }
+
+    /// Red Hat's feed names products by their CPE:
+    /// `cpe:/a:redhat:hummingbird:1` → `Red Hat:hummingbird:1`.
+    fn red_hat_stream(&self) -> Option<String> {
+        let product = ["cpe:/o:redhat:", "cpe:/a:redhat:"]
+            .iter()
+            .find_map(|p| self.cpe_name.strip_prefix(p));
+        match product {
+            Some(p) => Some(format!("Red Hat:{p}")),
+            None if self.id == "rhel" => Some(self.rhel_stream()),
+            None => None,
+        }
+    }
+
+    /// RHEL 8/9 file advisories per repository (`::baseos`, `::appstream`,
+    /// the scan asks both); RHEL 10 per minor release.
+    fn rhel_stream(&self) -> String {
+        match self.major() {
+            "8" | "9" => format!("Red Hat:enterprise_linux:{}::baseos", self.major()),
+            _ => format!("Red Hat:enterprise_linux:{}", self.major_minor()),
         }
     }
 
@@ -122,6 +157,45 @@ mod tests {
 
         let rocky = os("rocky9");
         assert_eq!(rocky.ecosystem().as_deref(), Some("Rocky Linux:9"));
+    }
+
+    #[test]
+    fn red_hat_streams_from_cpe() {
+        let ubi9 = OsRelease::parse(
+            "ID=\"rhel\"\nVERSION_ID=\"9.8\"\nCPE_NAME=\"cpe:/o:redhat:enterprise_linux:9::baseos\"\n",
+        );
+        assert_eq!(
+            ubi9.ecosystem().as_deref(),
+            Some("Red Hat:enterprise_linux:9::baseos")
+        );
+        let ubi10 = OsRelease::parse(
+            "ID=\"rhel\"\nVERSION_ID=\"10.2\"\nCPE_NAME=\"cpe:/o:redhat:enterprise_linux:10.2\"\n",
+        );
+        assert_eq!(
+            ubi10.ecosystem().as_deref(),
+            Some("Red Hat:enterprise_linux:10.2")
+        );
+        let hb = OsRelease::parse(
+            "ID=hummingbird\nVERSION_ID=\"20251124\"\nCPE_NAME=\"cpe:/a:redhat:hummingbird:1\"\n",
+        );
+        assert_eq!(hb.ecosystem().as_deref(), Some("Red Hat:hummingbird:1"));
+        assert_eq!(hb.borrowed_feed(), None);
+
+        let ol = OsRelease::parse(
+            "ID=\"ol\"\nVERSION_ID=\"9.8\"\nCPE_NAME=\"cpe:/o:oracle:linux:9:8:server\"\n",
+        );
+        assert_eq!(
+            ol.ecosystem().as_deref(),
+            Some("Red Hat:enterprise_linux:9::baseos")
+        );
+        assert_eq!(ol.borrowed_feed(), Some("RHEL"));
+        let rhel_no_cpe = OsRelease::parse("ID=rhel\nVERSION_ID=10.1\n");
+        assert_eq!(
+            rhel_no_cpe.ecosystem().as_deref(),
+            Some("Red Hat:enterprise_linux:10.1")
+        );
+        let hb_no_cpe = OsRelease::parse("ID=hummingbird\nVERSION_ID=1\n");
+        assert_eq!(hb_no_cpe.ecosystem(), None);
     }
 
     #[test]

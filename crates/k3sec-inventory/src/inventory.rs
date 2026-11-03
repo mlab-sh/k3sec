@@ -187,6 +187,7 @@ pub fn node_inventory(v: &NodeVersions, match_kernel: bool) -> ImageInventory {
             id: "node".into(),
             version_id: String::new(),
             pretty_name: v.os_image.clone(),
+            ..Default::default()
         }),
         containers: Vec::new(),
         packages,

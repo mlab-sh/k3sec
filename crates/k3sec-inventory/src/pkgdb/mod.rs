@@ -57,6 +57,12 @@ pub fn read(fs: &Rootfs, os: Option<&OsRelease>) -> (Vec<Package>, Vec<String>) 
             os.purl_distro()
         ));
     }
+    if let Some(feed) = os.borrowed_feed() {
+        warnings.push(format!(
+            "distro `{}` has no advisory feed of its own: OS packages matched against {feed} advisories",
+            os.purl_distro()
+        ));
+    }
     let pkgs = pkgs
         .into_iter()
         .map(|p| to_package(db, &os, ecosystem.as_deref(), p))

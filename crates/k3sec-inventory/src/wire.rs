@@ -16,6 +16,7 @@ pub fn from_api(img: &api::ImageInventory) -> ImageInventory {
             id: o.id.clone(),
             version_id: o.version_id.clone(),
             pretty_name: o.pretty_name.clone(),
+            ..Default::default()
         }),
         containers: img
             .containers
