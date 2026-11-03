@@ -290,6 +290,14 @@ pub struct Settings {
     pub node: Option<String>,
     /// Kubeconfig path; in-cluster config otherwise.
     pub kubeconfig: Option<String>,
+    /// Detection rules on the node (`watch --detect`): a JSON file or a
+    /// directory, applied to every event before it is sent, reloaded when
+    /// a file changes.
+    pub detect: Option<String>,
+    /// The API server's audit log on this node (`watch --audit-log`), on a
+    /// control-plane node: its detections are sent as `k8s-event`s of kind
+    /// `audit`.
+    pub audit_log: Option<String>,
     /// Events held for `events_since` (memory bound).
     pub backlog_events: u32,
 }
@@ -307,6 +315,8 @@ impl Default for Settings {
             allow_remote_rules: false,
             node: None,
             kubeconfig: None,
+            detect: None,
+            audit_log: None,
             backlog_events: 50_000,
         }
     }

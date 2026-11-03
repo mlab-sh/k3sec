@@ -2,6 +2,7 @@
 //! config stops this pipeline and starts another, inside the same process.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use k3sec_engine::{DetectionEngine, EngineConfig};
 use k3sec_inventory::{
     check_root_access, Cache, ExecObservation, ImageInventory, LangLimits, VulnWatcher,
 };
-use k3sec_k8s::{K8sEventSource, K8sLogSource, NodePodResolver, PodNotify};
+use k3sec_k8s::{AuditLogSource, K8sEventSource, K8sLogSource, NodePodResolver, PodNotify};
 use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
 use kube::Client;
 use tokio::sync::mpsc;
@@ -32,6 +33,8 @@ pub struct Deps {
     /// Where image inventories go (`inventory` op, `inventory_ready`).
     pub inventories: mpsc::Sender<ImageInventory>,
     pub states: States,
+    /// The API server's audit log, from the local policy.
+    pub audit_log: Option<PathBuf>,
 }
 
 pub struct Pipeline {
@@ -87,7 +90,7 @@ impl Pipeline {
         if src.logs {
             sources.push((
                 "logs",
-                Box::new(K8sLogSource::new(deps.client.clone(), one_ns)),
+                Box::new(K8sLogSource::new(deps.client.clone(), one_ns.clone())),
             ));
         }
 
@@ -171,6 +174,14 @@ impl Pipeline {
                 };
                 sources.push(("ebpf", Box::new(EbpfSource::new(config, resolver, scan_tx))));
             }
+        }
+
+        // The host admin's choice (a path on the node), not mlab's.
+        if let Some(path) = &deps.audit_log {
+            sources.push((
+                "audit_log",
+                Box::new(AuditLogSource::new(path.clone(), one_ns.clone(), false)),
+            ));
         }
 
         for (name, source) in sources {

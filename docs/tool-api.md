@@ -119,8 +119,15 @@ rulesets = ["/usr/share/k3sec/rules"]   # offered to mlab by name: "rules"
 allow_remote_rules = false      # accept YARA source sent by mlab
 node = "node-1"                 # else $NODE_NAME
 kubeconfig = "/etc/rancher/k3s/k3s.yaml"   # else in-cluster
+detect = "/etc/k3sec/detect"    # detection rules (JSON, CEL), applied before sending; reloaded on change
+audit_log = "/var/log/k3s-audit.log"   # control-plane nodes: API server audit detections (kind `audit`)
 backlog_events = 50000
 ```
+
+`detect` and `audit_log` are paths on the node, the host admin's to set:
+mlab cannot turn them on. Rules that fail to load refuse the start
+(`init_failed`, with the reason). See the wiki's [eBPF probe](../wiki/eBPF-Probe.md#detection-rules---detect)
+and [audit log](../wiki/Audit-Log.md) pages.
 
 `Config`:
 

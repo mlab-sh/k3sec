@@ -207,6 +207,14 @@ async fn init(settings: ciborium::Value, work_dir: PathBuf, writer: Writer) -> R
         tracing::info!("config clamped: {reason}");
     }
     let effective = config::effective(&settings, clamped, &work_dir)?;
+    // Like `watch --detect`: broken rules refuse to start, with the reason.
+    let detect = settings
+        .detect
+        .as_deref()
+        .map(|p| k3sec_engine::DetectRules::load(Path::new(p)))
+        .transpose()
+        .context("detection rules (`detect` in [tools.k3sec.settings])")?;
+    let audit_log = settings.audit_log.clone().map(PathBuf::from);
 
     let boot_id = format!("b-{:016x}", rand_u64());
     let states: States = Arc::default();
@@ -233,6 +241,7 @@ async fn init(settings: ciborium::Value, work_dir: PathBuf, writer: Writer) -> R
         sink: capture_tx,
         inventories: inv_tx,
         states,
+        audit_log,
     };
     let dropped = Arc::new(AtomicU64::new(0));
     let (stream_tx, stream_rx) = mpsc::channel::<SecEvent>(STREAM_QUEUE);
@@ -242,6 +251,7 @@ async fn init(settings: ciborium::Value, work_dir: PathBuf, writer: Writer) -> R
         shared.clone(),
         writer.clone(),
         dropped,
+        detect,
     ));
     tokio::spawn(inventories(inv_rx, shared.clone(), writer.clone()));
     tokio::spawn(facts(client, shared.clone()));
@@ -286,30 +296,50 @@ async fn collector(
     shared: Shared,
     writer: Writer,
     dropped: Arc<AtomicU64>,
+    mut detect: Option<k3sec_engine::DetectRules>,
 ) {
     let hasher = Arc::new(Mutex::new(ExecHasher::default()));
     let mut tick = tokio::time::interval(BATCH_INTERVAL);
+    let mut checked = std::time::Instant::now();
     loop {
+        if let Some(d) = detect
+            .as_mut()
+            .filter(|_| checked.elapsed() >= Duration::from_secs(2))
+        {
+            checked = std::time::Instant::now();
+            d.reload_if_changed();
+        }
         let batches = tokio::select! {
             ev = rx.recv() => {
-                let Some(mut ev) = ev else { return };
-                let (keep, execs) = {
+                let Some(ev) = ev else { return };
+                let execs = {
                     let Ok(s) = shared.lock() else { return };
-                    (keeps(&s.effective, &ev), s.pipeline.as_ref().and_then(|p| p.execs.clone()))
+                    s.pipeline.as_ref().and_then(|p| p.execs.clone())
                 };
-                if let Some(obs) = ExecObservation::from_event(&ev) {
-                    if let Some(tx) = execs {
-                        let _ = tx.try_send(obs.clone());
-                    }
-                    if keep {
-                        let h = hasher.clone();
-                        let digest = tokio::task::spawn_blocking(move || h.lock().ok()?.of_pid(obs.pid))
-                            .await
-                            .ok()
-                            .flatten();
-                        if let Some(d) = digest {
-                            ev.metadata.insert("sha256".into(), d);
-                        }
+                // The inventory sees every exec, whatever the rules drop.
+                let obs = ExecObservation::from_event(&ev);
+                if let (Some(obs), Some(tx)) = (&obs, execs) {
+                    let _ = tx.try_send(obs.clone());
+                }
+                let Some(mut ev) = (match &detect {
+                    Some(d) => d.apply(ev),
+                    None => Some(ev),
+                }) else {
+                    continue;
+                };
+                // After the rules, which may raise the severity.
+                let keep = {
+                    let Ok(s) = shared.lock() else { return };
+                    keeps(&s.effective, &ev)
+                };
+                if let Some(obs) = obs.filter(|_| keep) {
+                    let h = hasher.clone();
+                    let digest = tokio::task::spawn_blocking(move || h.lock().ok()?.of_pid(obs.pid))
+                        .await
+                        .ok()
+                        .flatten();
+                    if let Some(d) = digest {
+                        ev.metadata.insert("sha256".into(), d);
                     }
                 }
                 if !keep {
