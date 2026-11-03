@@ -111,6 +111,15 @@ spec:
       hostPID: true
       tolerations:
         - operator: Exists # every node, control plane included
+      # Not on serverless nodes (EKS Fargate, virtual kubelet): no host there,
+      # the pod would stay pending.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: eks.amazonaws.com/compute-type, operator: NotIn, values: [fargate] }
+                  - { key: type, operator: NotIn, values: [virtual-kubelet] }
       containers:
         - name: k3sec
           image: ghcr.io/mlab-sh/k3sec:1.7.0

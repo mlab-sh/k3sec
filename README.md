@@ -50,7 +50,7 @@ and cgroups and talks to the standard Kubernetes API.
 | k0s | Tested: `inventory`, `vulns`, `watch` |
 | Vanilla Kubernetes (kubeadm, kind) | Tested: `inventory`, `vulns`, `watch` |
 | Talos | Tested: `inventory`, `vulns`, `watch` |
-| EKS, GKE, AKS | Expected to work, not tested (not on Fargate / Autopilot: no `hostPID`) |
+| EKS, GKE, AKS | Expected to work, not tested. Fargate and virtual-kubelet nodes are skipped and named in a warning; GKE Autopilot refuses `hostPID` |
 | Docker host, no cluster (`--docker`) | Tested: `inventory`, `vulns`, `watch --ebpf` |
 | CRI-O / cri-dockerd nodes | Containers, events and runtime version matching; not tested on a live node |
 
