@@ -106,6 +106,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Host processes filtered in the kernel** (cgroup v2): once userspace has
   seen a host cgroup, the kernel drops its events itself. 2 000 execs from a
   host shell give 7 records instead of 2 000.
+- **Agent mode (`serve`) sends less**, on the same v1 wire:
+  - An image's dormant → loaded promotions are announced once per 2 minutes,
+    not on every exec. Each announcement makes mlab fetch the whole inventory.
+  - `status` goes out within 10 s of a change, else every 150 s (was every
+    60 s). It no longer carries the remote YARA source (up to 1 MiB).
+  - Events no longer say things twice: the payload drops what the metadata
+    or the object already says. An eBPF event goes from 423 to 300 B.
+  - A Kubernetes Event whose `count` goes up is sent once per 5 minutes, and
+    its payload on the wire is its `involvedObject` (1.1 KB to 0.1 KB).
+  - Batches are cut every 10 s instead of 2 s; a critical event still goes
+    at once. A busy minute is 8 envelopes instead of 30.
+- **`detect` and `audit_log` in agent mode**: set in the agent's local policy
+  (`[tools.k3sec.settings]`), as paths on the node. Rules that fail to load
+  stop the start with the reason.
 
 ### Fixed
 
@@ -113,6 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffer slot before its path was checked. A burst of 2 000 execs in a pod
   gave 757 events, and an idle node dropped about 1 000 records every 30 s.
   Paths are now checked first and the ring is 2 MiB: 2 000 of 2 000, no drop.
+- **Agent mode re-uploaded every inventory after `configure`**, with every
+  package back to dormant. What was loaded is now kept, and an image
+  rescanned unchanged is not announced again.
+- **`configure` refused every eBPF kind but exec, connect and file_write.**
+  It now accepts all of them, including the opt-in exit, accept and udp.
 - **Fixed versions of Red Hat advisories**: an `N:` epoch is now compared
   first and a missing one counts as 0. `0:2.28-251.el8` was taken as older
   than `2.28-225.el8`: on UBI 8.8, 11 of 221 findings had a fixed version, now
