@@ -2195,6 +2195,7 @@ dependencies = [
  "k3sec-core",
  "k3sec-probe-common",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

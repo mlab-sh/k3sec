@@ -104,6 +104,8 @@ pub async fn run(
                         ev.pid = pid;
                     }
                     fill_exec_path(&mut ev);
+                    // Read now, while the process (and its mount namespace) lives.
+                    let facts = Facts::of(&ev, probe_kind, &container_id);
                     let info = resolver.by_container_id(&container_id).await;
                     if info.is_none() && !not_pods.contains(&container_id) {
                         // Resolved later, off the reader: the next records keep flowing.
@@ -115,12 +117,12 @@ pub async fn run(
                             if info.is_none() {
                                 not_pods.insert(&container_id);
                             }
-                            let sec = build_event(&ev, probe_kind, &container_id, info, scan_tx.as_ref(), &stats, at);
+                            let sec = build_event(&ev, probe_kind, &facts, &container_id, info, scan_tx.as_ref(), &stats, at);
                             let _ = sink.send(sec).await;
                         });
                         continue;
                     }
-                    let sec = build_event(&ev, probe_kind, &container_id, info, scan_tx.as_ref(), &stats, at);
+                    let sec = build_event(&ev, probe_kind, &facts, &container_id, info, scan_tx.as_ref(), &stats, at);
                     if sink.send(sec).await.is_err() {
                         return Ok(()); // printer gone
                     }
@@ -236,9 +238,11 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
 }
 
 /// Turn a classified kernel event into a [`SecEvent`], with its pod when known.
+#[allow(clippy::too_many_arguments)]
 fn build_event(
     ev: &Event,
     probe_kind: ProbeKind,
+    facts: &Facts,
     container_id: &str,
     info: Option<ContainerInfo>,
     scan_tx: Option<&ScanRequestSink>,
@@ -259,12 +263,21 @@ fn build_event(
     let (kind_str, severity, message) = match probe_kind {
         ProbeKind::Exec => {
             let bin = cstr(&ev.filename[..FILENAME_LEN]);
-            let message = if bin.is_empty() {
-                format!("exec {comm} (path unknown: process gone)")
+            if facts.drift {
+                (
+                    "exec",
+                    Severity::Critical,
+                    format!("drift: exec {bin} ({comm}), a binary not in the image"),
+                )
+            } else if bin.is_empty() {
+                (
+                    "exec",
+                    Severity::Info,
+                    format!("exec {comm} (path unknown: process gone)"),
+                )
             } else {
-                format!("exec {bin} ({comm})")
-            };
-            ("exec", Severity::Info, message)
+                ("exec", Severity::Info, format!("exec {bin} ({comm})"))
+            }
         }
         ProbeKind::Connect => {
             let dst = format_dest(ev);
@@ -288,6 +301,9 @@ fn build_event(
         .meta("uid", ev.uid.to_string())
         .meta("comm", comm)
         .meta("container_id", short_id(container_id));
+    if facts.drift {
+        builder = builder.meta("drift", "true");
+    }
 
     if let Some(info) = &info {
         builder = builder
@@ -357,6 +373,87 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// What is read about a record's process while it still runs.
+#[derive(Debug, Default)]
+struct Facts {
+    /// The exec'd file is in the container's writable layer: added or
+    /// modified after the container started, so not the image's.
+    drift: bool,
+}
+
+impl Facts {
+    fn of(ev: &Event, kind: ProbeKind, container_id: &str) -> Self {
+        let mut facts = Facts::default();
+        if kind == ProbeKind::Exec {
+            let path = cstr(&ev.filename[..FILENAME_LEN]);
+            facts.drift = !path.is_empty()
+                && upper_dir(container_id, ev.pid)
+                    .is_some_and(|upper| in_upper_layer(&upper, &path));
+        }
+        facts
+    }
+}
+
+/// The writable (upper) layer of a container's root overlay, as a path
+/// readable here: through `/proc/1/root`, the host's (or node's) root even in
+/// a pod. One per container, kept: a short exec is gone before its mountinfo
+/// is read, another process of the container then gives it.
+fn upper_dir(container_id: &str, pid: u32) -> Option<std::path::PathBuf> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static UPPER: Mutex<Option<HashMap<String, std::path::PathBuf>>> = Mutex::new(None);
+    if let Some(hit) = UPPER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .get(container_id)
+    {
+        return Some(hit.clone());
+    }
+    let read = |pid: u32| {
+        let info = std::fs::read_to_string(format!("/proc/{pid}/mountinfo")).ok()?;
+        let upper = root_upper_dir(&info)?;
+        Some(std::path::Path::new("/proc/1/root").join(upper.trim_start_matches('/')))
+    };
+    let found = read(pid).or_else(|| {
+        std::fs::read_dir("/proc")
+            .ok()?
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
+            .find_map(read)
+    })?;
+    let mut cache = UPPER.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    // shortcut: wholesale reset instead of expiry, bounded by containers seen
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
+    cache.insert(container_id.to_string(), found.clone());
+    Some(found)
+}
+
+/// `upperdir=` of the overlay mounted on `/` in a mountinfo.
+fn root_upper_dir(mountinfo: &str) -> Option<String> {
+    mountinfo.lines().find_map(|line| {
+        let (mount, fs) = line.split_once(" - ")?;
+        if mount.split(' ').nth(4)? != "/" || !fs.starts_with("overlay ") {
+            return None;
+        }
+        fs.split([' ', ','])
+            .find_map(|o| o.strip_prefix("upperdir="))
+            .map(str::to_string)
+    })
+}
+
+fn in_upper_layer(upper: &std::path::Path, path: &str) -> bool {
+    // A whiteout or a directory there is no binary of this container.
+    upper
+        .join(path.trim_start_matches('/'))
+        .symlink_metadata()
+        .is_ok_and(|m| m.is_file())
 }
 
 /// An exec record from the raw tracepoint has no path: read it now, while
@@ -465,5 +562,20 @@ mod tests {
         conn.pid = std::process::id();
         fill_exec_path(&mut conn);
         assert_eq!(conn.filename[0], 0);
+    }
+
+    #[test]
+    fn overlay_upper_dir_and_drift() {
+        let info = "2717 2512 0:736 / / rw,relatime - overlay overlay rw,lowerdir=/s/939/fs:/s/938/fs,upperdir=/s/940/fs,workdir=/s/940/work\n\
+                    2718 2717 0:740 / /proc rw - proc proc rw\n";
+        assert_eq!(root_upper_dir(info).as_deref(), Some("/s/940/fs"));
+        assert_eq!(root_upper_dir("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
+        std::fs::write(dir.path().join("tmp/x"), b"\x7fELF").unwrap();
+        assert!(in_upper_layer(dir.path(), "/tmp/x"));
+        assert!(!in_upper_layer(dir.path(), "/bin/sh"));
+        assert!(!in_upper_layer(dir.path(), "/tmp"));
     }
 }

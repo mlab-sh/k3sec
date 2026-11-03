@@ -32,3 +32,6 @@ aya-build = "0.1"
 # Enables the real aya-based eBPF probe (Linux only). Without it, the probe
 # source compiles everywhere but returns a clear "unavailable" error at runtime.
 ebpf = ["dep:aya", "dep:k3sec-probe-common", "dep:chrono", "dep:serde_json"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -18,6 +18,12 @@ sudo k3sec watch --ebpf --vulns                # + exec events feed reachability
 
 Only the programs for the requested `--kind`s are attached.
 
+## Detections
+
+| Detection | Event | How |
+|-----------|-------|-----|
+| **Drift** | `exec`, severity critical, `drift=true`, "a binary not in the image" | the exec'd file is in the container's writable overlay layer (`upperdir` of its root mount): added or modified after the container started. The layer is read once per container, through another process of it when the exec is already gone |
+
 ## Build
 
 The probe is Linux-only, behind a cargo feature. The kernel program
