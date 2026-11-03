@@ -1,8 +1,8 @@
 //! rpm: the SQLite rpmdb (`/var/lib/rpm/rpmdb.sqlite`, RHEL/Rocky/Alma 9+,
 //! Fedora 33+; `/usr/lib/sysimage/rpm/rpmdb.sqlite` on Fedora 36+, RHEL 10 and
 //! Hummingbird). Each row of `Packages` is a binary rpm header blob.
-//! The Berkeley DB hash rpmdb (`/var/lib/rpm/Packages`, EL7 / EL8) holds the
-//! same blobs as its values. NDB (SUSE) is not supported.
+//! The Berkeley DB hash rpmdb (`/var/lib/rpm/Packages`, EL7 / EL8) and the
+//! NDB one (`Packages.db`, openSUSE / SLES) hold the same blobs.
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -37,8 +37,70 @@ pub fn read(fs: &Rootfs) -> Option<Result<Vec<OsPackage>>> {
     if let Some(path) = SQLITE_PATHS.iter().find_map(|p| fs.host_path(p)) {
         return Some(read_copy(&path));
     }
-    let path = fs.host_path("/var/lib/rpm/Packages")?;
-    Some(read_bdb_file(&path))
+    if let Some(path) = fs.host_path("/var/lib/rpm/Packages") {
+        return Some(read_bdb_file(&path));
+    }
+    let path = [
+        "/var/lib/rpm/Packages.db",
+        "/usr/lib/sysimage/rpm/Packages.db",
+    ]
+    .iter()
+    .find_map(|p| fs.host_path(p))?;
+    Some(read_ndb_file(&path))
+}
+
+fn read_ndb_file(path: &std::path::Path) -> Result<Vec<OsPackage>> {
+    let db = read_file_limited(path, MAX_DB_SIZE).context("cannot read rpmdb Packages.db")?;
+    Ok(ndb_values(&db)?
+        .iter()
+        .filter_map(|b| parse_header(b))
+        .filter(|p| p.name != "gpg-pubkey")
+        .collect())
+}
+
+/// The header blobs of an NDB rpmdb (rpm's `ndb` backend, SUSE): a header
+/// page, slot entries `{magic, package index, offset, count}` pointing at
+/// blobs `{magic, package index, checksum, length}` in 16-byte units.
+fn ndb_values(db: &[u8]) -> Result<Vec<Vec<u8>>> {
+    const HEADER_MAGIC: u32 = u32::from_le_bytes(*b"RpmP");
+    const SLOT_MAGIC: u32 = u32::from_le_bytes(*b"Slot");
+    const BLOB_MAGIC: u32 = u32::from_le_bytes(*b"BlbS");
+    const PAGE: usize = 4096;
+    const UNIT: usize = 16;
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(db.get(at..at + 4)?.try_into().ok()?))
+    };
+    if u32_at(0) != Some(HEADER_MAGIC) || u32_at(4) != Some(0) {
+        bail!("not an NDB rpmdb");
+    }
+    let slot_pages = u32_at(12).context("truncated NDB header")? as usize;
+    // The header and the free-list entry take the first two slot positions.
+    let slots = (slot_pages * PAGE / UNIT).saturating_sub(2);
+    let mut values = Vec::new();
+    for i in 0..slots {
+        let at = 32 + i * UNIT;
+        let (Some(magic), Some(index), Some(offset)) = (u32_at(at), u32_at(at + 4), u32_at(at + 8))
+        else {
+            break;
+        };
+        if magic != SLOT_MAGIC {
+            bail!("corrupt NDB slot {i}");
+        }
+        if index == 0 {
+            continue; // free slot
+        }
+        let blob = offset as usize * UNIT;
+        if u32_at(blob) != Some(BLOB_MAGIC) || u32_at(blob + 4) != Some(index) {
+            continue;
+        }
+        let Some(len) = u32_at(blob + 12) else {
+            continue;
+        };
+        if let Some(value) = db.get(blob + UNIT..blob + UNIT + len as usize) {
+            values.push(value.to_vec());
+        }
+    }
+    Ok(values)
 }
 
 fn read_bdb_file(path: &std::path::Path) -> Result<Vec<OsPackage>> {
@@ -380,6 +442,39 @@ mod tests {
             .all(|v| v.len() == blob.len()));
 
         assert!(bdb_values(b"not a database at all, really").is_err());
+    }
+
+    #[test]
+    fn reads_ndb_rpmdb() {
+        let blob = header(&[
+            (NAME, TYPE_STRING, s("curl"), 1),
+            (VERSION, TYPE_STRING, s("8.14.1"), 1),
+            (RELEASE, TYPE_STRING, s("150600.4.40.1"), 1),
+            (ARCH, TYPE_STRING, s("x86_64"), 1),
+        ]);
+        let mut db = vec![0u8; 2 * 4096];
+        let le =
+            |db: &mut Vec<u8>, at: usize, v: u32| db[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        db[0..4].copy_from_slice(b"RpmP");
+        le(&mut db, 12, 1); // one slot page
+        for i in 0..254 {
+            db[32 + i * 16..36 + i * 16].copy_from_slice(b"Slot");
+        }
+        // Slot 0: package 7, blob at unit 256 (byte 4096).
+        le(&mut db, 36, 7);
+        le(&mut db, 40, 256);
+        db[4096..4100].copy_from_slice(b"BlbS");
+        le(&mut db, 4100, 7);
+        le(&mut db, 4108, blob.len() as u32);
+        db[4112..4112 + blob.len()].copy_from_slice(&blob);
+        let values = ndb_values(&db).unwrap();
+        assert_eq!(values.len(), 1);
+        let p = parse_header(&values[0]).unwrap();
+        assert_eq!(
+            (p.name.as_str(), p.version.as_str()),
+            ("curl", "8.14.1-150600.4.40.1")
+        );
+        assert!(ndb_values(b"RpmQ and more bytes here, but not NDB").is_err());
     }
 
     #[test]

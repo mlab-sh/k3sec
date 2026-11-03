@@ -88,6 +88,8 @@ fn read_rpm(fs: &Rootfs, warnings: &mut Vec<String>) -> Option<Vec<OsPackage>> {
         "/var/lib/rpm/rpmdb.sqlite",
         "/usr/lib/sysimage/rpm/rpmdb.sqlite",
         "/var/lib/rpm/Packages",
+        "/var/lib/rpm/Packages.db",
+        "/usr/lib/sysimage/rpm/Packages.db",
     ]
     .iter()
     .any(|p| fs.exists(p))

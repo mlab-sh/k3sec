@@ -83,6 +83,8 @@ impl OsRelease {
             "almalinux" => Some(format!("AlmaLinux:{}", self.major())),
             // Rolling, and what Chainguard's public images declare too.
             "wolfi" => Some("Wolfi".into()),
+            "opensuse-leap" => Some(format!("openSUSE:Leap {}", self.version_id)),
+            "opensuse-tumbleweed" => Some("openSUSE:Tumbleweed".into()),
             "rhel" | "hummingbird" => self.red_hat_stream(),
             // A RHEL rebuild with the same NEVRAs and no feed of its own.
             "ol" => Some(self.rhel_stream()),
@@ -198,6 +200,8 @@ mod tests {
         );
         let wolfi = OsRelease::parse("ID=wolfi\nVERSION_ID=\"20230201\"\n");
         assert_eq!(wolfi.ecosystem().as_deref(), Some("Wolfi"));
+        let leap = OsRelease::parse("ID=\"opensuse-leap\"\nVERSION_ID=\"15.6\"\n");
+        assert_eq!(leap.ecosystem().as_deref(), Some("openSUSE:Leap 15.6"));
         let hb_no_cpe = OsRelease::parse("ID=hummingbird\nVERSION_ID=1\n");
         assert_eq!(hb_no_cpe.ecosystem(), None);
     }

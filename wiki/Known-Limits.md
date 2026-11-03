@@ -34,7 +34,7 @@ What k3sec does **not** see yet, and how it shows up.
   32 MiB per lockfile, 2 048 binaries (Go, Rust) and Java archives. `node_modules` is read through its
   hidden lockfile, else module by module (20 000 at most).
 - **rpm**: `rpmdb.sqlite` (EL9+, Fedora, Hummingbird) and the Berkeley DB
-  `Packages` (EL7 / EL8), only with `--features rpm`. NDB (SUSE) is not read. Go build info: Go ≥ 1.18.
+  `Packages` (EL7 / EL8) and NDB `Packages.db` (openSUSE / SLES), only with `--features rpm`. Go build info: Go ≥ 1.18.
 - **One root per image.** An image is inventoried from one of its containers;
   runtime changes in the other containers of the same digest are not seen.
 - **Node-local.** Only containers with a process on this host: one k3sec per
@@ -43,7 +43,8 @@ What k3sec does **not** see yet, and how it shows up.
 ## Matching
 
 - **Distros**: Debian, Ubuntu, Alpine, Rocky, Alma, RHEL / UBI, Hummingbird
-  and Wolfi (Chainguard's public images) are matched (Red Hat streams from the image's `CPE_NAME`; RHEL
+  Wolfi (Chainguard's public images), openSUSE Leap and Tumbleweed are matched
+  (SLES has no feed) (Red Hat streams from the image's `CPE_NAME`; RHEL
   8/9 ask both `baseos` and `appstream`). Oracle Linux has no feed of its own
   and is matched against RHEL advisories, with a warning. Others are
   inventoried with a warning and their OS packages not matched.

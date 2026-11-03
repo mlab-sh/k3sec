@@ -28,7 +28,7 @@ Distroless images report `PRETTY_NAME="Distroless"` with `ID=debian`.
 | **dpkg** | `/var/lib/dpkg/status` | `info/<pkg>.list`, `info/<pkg>:<arch>.list` | only `Status: … installed`; `Source:` kept (`bash (5.2.15-2)` gives source name **and** version) |
 | **dpkg, distroless** | `/var/lib/dpkg/status.d/<pkg>` | `status.d/<pkg>.md5sums` | coredns on the lab |
 | **apk** | `/lib/apk/db/installed` | `F:` directory + `R:` files | `o:` origin = source package |
-| **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages` | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
+| **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages`, NDB `Packages.db` (openSUSE / SLES) | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
 | **BusyBox, no package db** | `/bin/busybox` | the binary itself | version from its `BusyBox vX.Y.Z` banner, matched by CPE; only when the image has no package database (official Prometheus images) |
 | **Runtimes built from source** | `/usr/local/lib/libpython3.*`, `/usr/local/bin/{node,php,perl,redis-server}`, `libphp`, `libruby`, `/usr/local/apache2/bin/httpd`, `/opt/java/openjdk/release`, `/usr/local/go/VERSION` | the files found | version from the binary's own string (`node.js/v22.23.4`, `X-Powered-By: PHP/8.3.36`…), matched by CPE (Go as `stdlib`); a file a package owns is left to it. 18 of 45 audit images |
 
@@ -46,7 +46,8 @@ opens, and `/proc/<pid>/root` is a magic link whose target reads as `/`: opened
 in place, it would open the *host's* rpmdb. k3sec copies the database (bounded
 to 64 MiB) to a temp file and opens the copy read-only (`immutable=1`). The
 Berkeley DB hash rpmdb (EL7 / EL8) is parsed directly: its values are the same
-header blobs, read from their overflow pages. NDB rpmdbs (SUSE) are not read.
+header blobs, read from their overflow pages. So is the NDB rpmdb of openSUSE
+and SLES (`Packages.db`: slots pointing at blobs).
 
 Without `--features rpm`, an rpm image is listed with a warning (real output,
 default build):
