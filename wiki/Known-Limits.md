@@ -51,9 +51,13 @@ What k3sec does **not** see yet, and how it shows up.
 - **Red Hat: fixed CVEs only.** The Red Hat feed holds errata (RHSA/RHBA), so
   a CVE Red Hat has not fixed yet (`not-fixed`, `wont-fix` in its VEX) is not
   reported: a patched `ubi9-minimal` shows 0 where grype lists 212 unfixed.
-- **Source-package noise.** Distro advisories are filed per source package: a
-  dormant `linux-libc-dev` (kernel headers) carries every Debian kernel CVE
-  (httpd: 9492 vulns, 104 loaded). `--only-loaded` cuts it.
+- **Kernel headers are not matched.** `linux-libc-dev`, `linux-headers` and
+  `kernel-headers` describe the kernel an image was built against, not the
+  one running (the node's, `--match-kernel`); matched, they carried every
+  kernel CVE (golang:1.23: 7 126 findings, 1 075 without them). They stay in
+  the inventory and the SBOM, counted as unmatched.
+- **Source-package noise.** Distro advisories are filed per source package:
+  one dormant source can still bring many CVEs. `--only-loaded` cuts it.
 - **Enrichment budget.** A CVSS v3 vector in the advisory is scored locally
   (most Debian, Red Hat and GHSA records carry one). Per-CVE lookups (CVSS for
   the rest, EU KEV) are capped at 800 per run, loaded code first; beyond, the

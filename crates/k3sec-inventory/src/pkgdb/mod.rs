@@ -135,6 +135,13 @@ pub fn busybox(fs: &Rootfs) -> Option<Package> {
     Some(p)
 }
 
+/// `linux-libc-dev` (Debian, Ubuntu), `linux-headers` (Alpine),
+/// `kernel-headers` (rpm): header files, never loaded, carrying every kernel CVE.
+pub fn is_kernel_headers(name: &str) -> bool {
+    matches!(name, "linux-libc-dev" | "linux-headers" | "kernel-headers")
+        || name.starts_with("linux-headers-")
+}
+
 fn to_package(db: PkgDb, os: &OsRelease, ecosystem: Option<&str>, p: OsPackage) -> Package {
     let ty = match db {
         PkgDb::Dpkg => "deb",
@@ -169,7 +176,11 @@ fn to_package(db: PkgDb, os: &OsRelease, ecosystem: Option<&str>, p: OsPackage) 
         .source_version
         .clone()
         .unwrap_or_else(|| p.version.clone());
-    pkg.coordinate = ecosystem.map(|e| Coordinate::eco(e, &match_name, &match_version));
+    // Kernel headers describe the kernel the image was built against, not the
+    // one running (the node's, `--match-kernel`): their kernel CVEs are noise.
+    pkg.coordinate = ecosystem
+        .filter(|_| !is_kernel_headers(&p.name))
+        .map(|e| Coordinate::eco(e, &match_name, &match_version));
     pkg.source = p.source.filter(|s| *s != p.name);
     pkg.files = p.files;
     pkg
@@ -198,6 +209,28 @@ mod tests {
 
         std::fs::write(dir.path().join("bin/busybox"), b"no banner here").unwrap();
         assert!(busybox(&Rootfs::new(dir.path())).is_none());
+    }
+
+    #[test]
+    fn kernel_headers_are_listed_not_matched() {
+        let os = OsRelease::parse("ID=debian\nVERSION_ID=\"12\"\n");
+        let headers = to_package(
+            PkgDb::Dpkg,
+            &os,
+            os.ecosystem().as_deref(),
+            OsPackage {
+                name: "linux-libc-dev".into(),
+                version: "6.1.158-1".into(),
+                arch: "amd64".into(),
+                source: Some("linux".into()),
+                source_version: None,
+                files: vec!["/usr/include/linux/bpf.h".into()],
+            },
+        );
+        assert_eq!(headers.coordinate, None);
+        assert!(headers.purl.starts_with("pkg:deb/debian/linux-libc-dev@"));
+        assert!(is_kernel_headers("kernel-headers") && is_kernel_headers("linux-headers-6.8.0-45"));
+        assert!(!is_kernel_headers("linux-image-amd64") && !is_kernel_headers("libc6"));
     }
 
     #[test]
