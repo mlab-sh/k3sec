@@ -19,6 +19,10 @@ pub mod kind {
     pub const FILE_WRITE: u32 = 2;
     pub const EXIT: u32 = 3;
     pub const SECRET_READ: u32 = 4;
+    /// Connect to a Unix socket (`filename` = its path).
+    pub const UNIX_CONNECT: u32 = 5;
+    /// A new mount (`aux` = filesystem type).
+    pub const MOUNT: u32 = 6;
 }
 
 /// Address family values (as in `<sys/socket.h>`), for `Event::af`.
@@ -32,7 +36,9 @@ pub mod af {
 /// Field relevance by `kind`:
 /// * `exec`: `comm`, `filename` (the executed binary), pid/uid/cgroup.
 /// * `connect`: `daddr`, `dport`, `af`, pid/uid/cgroup.
-/// * `file_write`: `filename` (the opened path), pid/uid/cgroup.
+/// * `file_write`, `secret_read`: `filename` (the opened path), pid/uid/cgroup.
+/// * `unix_connect`: `filename` (the socket path).
+/// * `mount`: `aux` (the filesystem type).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Event {
@@ -53,7 +59,13 @@ pub struct Event {
     pub dport: u16,
     /// Address family (see [`af`]).
     pub af: u16,
+    pub _pad2: u32,
+    /// A second NUL-padded string some kinds carry (a mount's filesystem type).
+    pub aux: [u8; AUX_LEN],
 }
+
+/// Length of [`Event::aux`].
+pub const AUX_LEN: usize = 32;
 
 impl Event {
     /// An all-zero event (BPF side fills fields in place).
@@ -69,6 +81,8 @@ impl Event {
             daddr: [0; 16],
             dport: 0,
             af: 0,
+            _pad2: 0,
+            aux: [0; AUX_LEN],
         }
     }
 

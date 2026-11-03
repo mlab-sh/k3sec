@@ -40,6 +40,10 @@ pub enum ProbeKind {
     Exit,
     /// Read-open of a credential (service account token, SSH or cloud keys).
     SecretRead,
+    /// A container-escape primitive: a cgroup `release_agent` or
+    /// `core_pattern` write, a connect to the container runtime's socket, a
+    /// host device or cgroup mount.
+    Escape,
 }
 
 impl ProbeKind {
@@ -51,6 +55,7 @@ impl ProbeKind {
             ProbeKind::FileWrite => "file_write",
             ProbeKind::Exit => "exit",
             ProbeKind::SecretRead => "secret_read",
+            ProbeKind::Escape => "escape",
         }
     }
 }

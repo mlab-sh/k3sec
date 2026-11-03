@@ -152,7 +152,21 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     if config.kinds.allows(ProbeKind::Exit) {
         attach_raw_tracepoint(ebpf, "k3sec_exit", "sched_process_exit")?;
     }
-    if config.kinds.allows(ProbeKind::FileWrite) || config.kinds.allows(ProbeKind::SecretRead) {
+    if config.kinds.allows(ProbeKind::Escape) {
+        // Internal functions a kernel may have inlined: the other primitives keep going.
+        for (prog, symbol) in [
+            ("k3sec_unix_connect", "unix_stream_connect"),
+            ("k3sec_mount", "alloc_fs_context"),
+        ] {
+            if let Err(e) = attach_kprobe(ebpf, prog, symbol) {
+                tracing::warn!(error = %format!("{e:#}"), "escape detection without {symbol}");
+            }
+        }
+    }
+    if config.kinds.allows(ProbeKind::FileWrite)
+        || config.kinds.allows(ProbeKind::SecretRead)
+        || config.kinds.allows(ProbeKind::Escape)
+    {
         // An internal function: a kernel may have inlined it. Then no
         // file_write, but exec and connect keep going.
         if let Err(e) = attach_kprobe(ebpf, "k3sec_openat", "do_sys_openat2") {
@@ -215,9 +229,14 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
     let probe_kind = match ev.kind {
         kind::EXEC => ProbeKind::Exec,
         kind::CONNECT => ProbeKind::Connect,
+        kind::FILE_WRITE if escape_technique(ev).is_some() => ProbeKind::Escape,
         kind::FILE_WRITE => ProbeKind::FileWrite,
         kind::EXIT => ProbeKind::Exit,
         kind::SECRET_READ => ProbeKind::SecretRead,
+        kind::UNIX_CONNECT | kind::MOUNT => match escape_technique(ev) {
+            Some(_) => ProbeKind::Escape,
+            None => return None,
+        },
         _ => {
             stats.malformed.fetch_add(1, Ordering::Relaxed);
             return None;
@@ -325,6 +344,14 @@ fn build_event(
                 format!("read {path} ({comm})"),
             )
         }
+        ProbeKind::Escape => {
+            let what = escape_technique(ev).unwrap_or_default();
+            (
+                "escape",
+                Severity::Critical,
+                format!("escape: {what} ({comm})"),
+            )
+        }
     };
 
     let mut builder = SecEvent::builder(Source::Ebpf, at)
@@ -377,7 +404,7 @@ fn maybe_request_scan(
     let trigger = match probe_kind {
         ProbeKind::Exec => ScanTrigger::Exec,
         ProbeKind::FileWrite => ScanTrigger::FileWrite,
-        ProbeKind::Connect | ProbeKind::Exit | ProbeKind::SecretRead => return, // nothing to scan
+        ProbeKind::Connect | ProbeKind::Exit | ProbeKind::SecretRead | ProbeKind::Escape => return,
     };
     let req = ScanRequest {
         trigger,
@@ -421,6 +448,55 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// What makes `ev` a container-escape primitive, if it is one.
+fn escape_technique(ev: &Event) -> Option<String> {
+    let path = cstr(&ev.filename[..FILENAME_LEN]);
+    let comm = cstr(&ev.comm[..COMM_LEN]);
+    match ev.kind {
+        kind::FILE_WRITE => {
+            let file = path.rsplit('/').next().unwrap_or("");
+            let what = match file {
+                "release_agent" | "notify_on_release" if path.starts_with("/sys/fs/cgroup/") => {
+                    "cgroup release_agent"
+                }
+                "core_pattern" if path.starts_with("/proc/sys/kernel/") => "core_pattern",
+                "modprobe" if path.starts_with("/proc/sys/kernel/") => "modprobe helper",
+                "uevent_helper" => "uevent helper",
+                _ => return None,
+            };
+            Some(format!("write {path} ({what})"))
+        }
+        kind::UNIX_CONNECT => [
+            "docker.sock",
+            "containerd.sock",
+            "crio.sock",
+            "cri-dockerd.sock",
+            "podman.sock",
+        ]
+        .iter()
+        .any(|s| path.ends_with(s))
+        .then(|| format!("connect to the container runtime's socket {path}")),
+        kind::MOUNT => {
+            // runc sets the container's own mounts up before the process starts.
+            if comm.starts_with("runc") || comm.starts_with("containerd") || comm == "k3s" {
+                return None;
+            }
+            let fstype = cstr(&ev.aux);
+            let what = match fstype.as_str() {
+                "cgroup" | "cgroup2" => "the cgroup hierarchy",
+                "debugfs" | "securityfs" | "bpf" | "tracefs" => "a kernel interface",
+                // A disk filesystem: a host block device, from a container.
+                "ext4" | "ext3" | "ext2" | "xfs" | "btrfs" | "vfat" | "ntfs" | "ntfs3" | "f2fs" => {
+                    "a disk"
+                }
+                _ => return None,
+            };
+            Some(format!("mount of {what} ({fstype})"))
+        }
+        _ => None,
+    }
 }
 
 /// A `secret_read` path worth reporting: the kernel matched prefixes; under
@@ -680,6 +756,10 @@ fn payload(
         ProbeKind::Exec | ProbeKind::FileWrite | ProbeKind::SecretRead => {
             obj["path"] = serde_json::json!(cstr(&ev.filename[..FILENAME_LEN]));
         }
+        ProbeKind::Escape => {
+            obj["path"] = serde_json::json!(cstr(&ev.filename[..FILENAME_LEN]));
+            obj["technique"] = serde_json::json!(escape_technique(ev));
+        }
         ProbeKind::Connect => {
             obj["dest"] = serde_json::json!(format_dest(ev));
         }
@@ -797,5 +877,34 @@ mod tests {
         assert!(is_credential("/home/app/.ssh/id_ed25519"));
         assert!(is_credential("/home/app/.docker/config.json"));
         assert!(!is_credential("/home/app/notes.txt"));
+    }
+
+    #[test]
+    fn escape_primitives() {
+        let ev = |k: u32, path: &str, comm: &str, aux: &str| {
+            let mut e = Event::zeroed();
+            e.kind = k;
+            e.filename[..path.len()].copy_from_slice(path.as_bytes());
+            e.comm[..comm.len()].copy_from_slice(comm.as_bytes());
+            e.aux[..aux.len()].copy_from_slice(aux.as_bytes());
+            e
+        };
+        let t = |k, p, c, a| escape_technique(&ev(k, p, c, a));
+        assert!(t(
+            kind::FILE_WRITE,
+            "/sys/fs/cgroup/rdma/release_agent",
+            "sh",
+            ""
+        )
+        .is_some());
+        assert!(t(kind::FILE_WRITE, "/proc/sys/kernel/core_pattern", "sh", "").is_some());
+        assert!(t(kind::FILE_WRITE, "/sys/fs/cgroup/memory.max", "sh", "").is_none());
+        assert!(t(kind::FILE_WRITE, "/etc/passwd", "sh", "").is_none());
+        assert!(t(kind::UNIX_CONNECT, "/var/run/docker.sock", "curl", "").is_some());
+        assert!(t(kind::UNIX_CONNECT, "/run/app.sock", "curl", "").is_none());
+        assert!(t(kind::MOUNT, "", "mount", "ext4").is_some());
+        assert!(t(kind::MOUNT, "", "mount", "cgroup2").is_some());
+        assert!(t(kind::MOUNT, "", "runc:[2:INIT]", "cgroup2").is_none());
+        assert!(t(kind::MOUNT, "", "mount", "tmpfs").is_none());
     }
 }

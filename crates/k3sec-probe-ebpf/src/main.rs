@@ -26,7 +26,7 @@ use aya_ebpf::{
     programs::{ProbeContext, RawTracePointContext, TracePointContext},
     EbpfContext,
 };
-use k3sec_probe_common::{af, kind, Event, FILENAME_LEN};
+use k3sec_probe_common::{af, kind, Event, AUX_LEN, FILENAME_LEN};
 
 /// Ring buffer carrying events to userspace (256 KiB).
 #[map]
@@ -37,7 +37,15 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 static DROPS: Array<u64> = Array::with_max_entries(1, 0);
 
 /// Sensitive path prefixes matched in-kernel for `file_write`.
-const SENSITIVE_PREFIXES: [&[u8]; 4] = [b"/etc/", b"/usr/bin/", b"/root/", b"/var/run/secrets"];
+const SENSITIVE_PREFIXES: [&[u8]; 6] = [
+    b"/etc/",
+    b"/usr/bin/",
+    b"/root/",
+    b"/var/run/secrets",
+    // Escape primitives: cgroup v1 release_agent, core_pattern, modprobe.
+    b"/sys/fs/cgroup/",
+    b"/proc/sys/",
+];
 
 /// Credentials, matched in-kernel for `secret_read` (read-only opens). Under
 /// `/home/` userspace keeps only the credential directories.
@@ -219,6 +227,75 @@ fn starts_with(path: &[u8], prefix: &[u8]) -> bool {
 // connect (TCP v4/v6)
 // ---------------------------------------------------------------------------
 
+/// kprobe: `unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+/// int addr_len, int flags)`: `uaddr` is the kernel's copy of the
+/// `sockaddr_un`, its path at offset 2 (abstract sockets start with NUL and
+/// read as empty). Userspace keeps the container runtimes' sockets.
+#[kprobe]
+pub fn k3sec_unix_connect(ctx: ProbeContext) -> u32 {
+    let _ = try_unix_connect(&ctx);
+    0
+}
+
+fn try_unix_connect(ctx: &ProbeContext) -> Result<(), i64> {
+    let uaddr: *const u8 = ctx.arg(1).ok_or(1i64)?;
+    if uaddr.is_null() {
+        return Ok(());
+    }
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return Err(0);
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: as in `try_execve`; the path is read into the reserved slot.
+    unsafe {
+        fill_common(e, kind::UNIX_CONNECT);
+        let path = (uaddr as usize + 2) as *const u8;
+        if bpf_probe_read_kernel_str_bytes(path, &mut (*e).filename).is_err()
+            || (*e).filename[0] != b'/'
+        {
+            entry.discard(0);
+            return Ok(());
+        }
+    }
+    entry.submit(0);
+    Ok(())
+}
+
+/// kprobe: `alloc_fs_context(struct file_system_type *fs_type, struct dentry
+/// *reference, unsigned int sb_flags, unsigned int sb_flags_mask, enum
+/// fs_context_purpose purpose)`: every new mount, through `mount(2)` or the
+/// `fsopen(2)` API alike. `struct file_system_type` starts with `const char
+/// *name`, the one field read. Remounts and submounts (`purpose` != 0) skipped.
+#[kprobe]
+pub fn k3sec_mount(ctx: ProbeContext) -> u32 {
+    let _ = try_mount(&ctx);
+    0
+}
+
+fn try_mount(ctx: &ProbeContext) -> Result<(), i64> {
+    let fs_type: *const *const u8 = ctx.arg(0).ok_or(1i64)?;
+    let purpose: u64 = ctx.arg(4).ok_or(1i64)?;
+    if fs_type.is_null() || purpose != 0 {
+        return Ok(());
+    }
+    let name: *const u8 = unsafe { bpf_probe_read_kernel(fs_type) }?;
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return Err(0);
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: as in `try_execve`; the type name is a kernel string.
+    unsafe {
+        fill_common(e, kind::MOUNT);
+        if !name.is_null() {
+            let _ = bpf_probe_read_kernel_str_bytes(name, &mut (*e).aux);
+        }
+    }
+    entry.submit(0);
+    Ok(())
+}
+
 /// kprobe: `tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int len)`.
 #[kprobe]
 pub fn k3sec_tcp_v4_connect(ctx: ProbeContext) -> u32 {
@@ -291,6 +368,8 @@ unsafe fn fill_common(e: *mut Event, kind: u32) {
     (*e).daddr = [0u8; 16];
     (*e).dport = 0;
     (*e).af = 0;
+    (*e)._pad2 = 0;
+    (*e).aux = [0u8; AUX_LEN];
     match bpf_get_current_comm() {
         Ok(comm) => (*e).comm = comm,
         Err(_) => (*e).comm = [0u8; 16],
