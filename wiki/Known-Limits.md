@@ -34,8 +34,8 @@ What k3sec does **not** see yet, and how it shows up.
 
 ## Matching
 
-- **Distros**: Debian, Ubuntu, Alpine, Rocky, Alma, RHEL / UBI and
-  Hummingbird are matched (Red Hat streams from the image's `CPE_NAME`; RHEL
+- **Distros**: Debian, Ubuntu, Alpine, Rocky, Alma, RHEL / UBI, Hummingbird
+  and Wolfi (Chainguard's public images) are matched (Red Hat streams from the image's `CPE_NAME`; RHEL
   8/9 ask both `baseos` and `appstream`). Oracle Linux has no feed of its own
   and is matched against RHEL advisories, with a warning. Others are
   inventoried with a warning and their OS packages not matched.

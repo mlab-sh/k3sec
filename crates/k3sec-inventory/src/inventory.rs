@@ -67,6 +67,7 @@ pub fn scan_image(
     let (mut packages, mut warnings) = pkgdb::read(&rootfs, os.as_ref());
     if packages.is_empty() && warnings.is_empty() {
         warnings.push("no OS package database found (scratch or distroless-static image?)".into());
+        packages.extend(pkgdb::busybox(&rootfs));
     }
     let index = FileIndex::build(&rootfs, &packages);
 

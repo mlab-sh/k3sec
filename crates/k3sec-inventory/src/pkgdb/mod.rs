@@ -99,6 +99,35 @@ fn read_rpm(fs: &Rootfs, warnings: &mut Vec<String>) -> Option<Vec<OsPackage>> {
     None
 }
 
+/// An image with no package database but a BusyBox userland (the official
+/// Prometheus, Alertmanager images): BusyBox itself, matched by CPE, its
+/// version read from the banner the binary embeds.
+pub fn busybox(fs: &Rootfs) -> Option<Package> {
+    const PATH: &str = "/bin/busybox";
+    let bin = fs.read_limited(PATH, 8 * 1024 * 1024).ok()?;
+    let at = bin.windows(9).position(|w| w == b"BusyBox v")? + 9;
+    let version: String = bin[at..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit() || **b == b'.')
+        .map(|&b| b as char)
+        .collect();
+    let version = version.trim_end_matches('.');
+    if !version.contains('.') {
+        return None;
+    }
+    let mut p = Package::new(
+        "busybox",
+        version,
+        PackageKind::Os,
+        purl::build("generic", None, "busybox", version, &[]),
+    );
+    p.coordinate = Some(Coordinate::Cpe {
+        cpe: format!("cpe:2.3:a:busybox:busybox:{version}:*:*:*:*:*:*:*"),
+    });
+    p.files = vec![PATH.into()];
+    Some(p)
+}
+
 fn to_package(db: PkgDb, os: &OsRelease, ecosystem: Option<&str>, p: OsPackage) -> Package {
     let ty = match db {
         PkgDb::Dpkg => "deb",
@@ -141,6 +170,27 @@ fn to_package(db: PkgDb, os: &OsRelease, ecosystem: Option<&str>, p: OsPackage) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busybox_version_from_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+        let mut bin = vec![0x7f, b'E', b'L', b'F', 0, 0];
+        bin.extend(b"BusyBox v1.36.1 (2024-06-12 11:52:11 UTC) multi-call binary.\0");
+        std::fs::write(dir.path().join("bin/busybox"), &bin).unwrap();
+        let p = busybox(&Rootfs::new(dir.path())).unwrap();
+        assert_eq!(p.version, "1.36.1");
+        assert_eq!(
+            p.coordinate,
+            Some(Coordinate::Cpe {
+                cpe: "cpe:2.3:a:busybox:busybox:1.36.1:*:*:*:*:*:*:*".into()
+            })
+        );
+        assert_eq!(p.files, ["/bin/busybox"]);
+
+        std::fs::write(dir.path().join("bin/busybox"), b"no banner here").unwrap();
+        assert!(busybox(&Rootfs::new(dir.path())).is_none());
+    }
 
     #[test]
     fn deb_purl_and_source_coordinate() {

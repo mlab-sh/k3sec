@@ -81,6 +81,8 @@ impl OsRelease {
             "alpine" => Some(format!("Alpine:v{}", self.major_minor())),
             "rocky" => Some(format!("Rocky Linux:{}", self.major())),
             "almalinux" => Some(format!("AlmaLinux:{}", self.major())),
+            // Rolling, and what Chainguard's public images declare too.
+            "wolfi" => Some("Wolfi".into()),
             "rhel" | "hummingbird" => self.red_hat_stream(),
             // A RHEL rebuild with the same NEVRAs and no feed of its own.
             "ol" => Some(self.rhel_stream()),
@@ -194,6 +196,8 @@ mod tests {
             rhel_no_cpe.ecosystem().as_deref(),
             Some("Red Hat:enterprise_linux:10.1")
         );
+        let wolfi = OsRelease::parse("ID=wolfi\nVERSION_ID=\"20230201\"\n");
+        assert_eq!(wolfi.ecosystem().as_deref(), Some("Wolfi"));
         let hb_no_cpe = OsRelease::parse("ID=hummingbird\nVERSION_ID=1\n");
         assert_eq!(hb_no_cpe.ecosystem(), None);
     }

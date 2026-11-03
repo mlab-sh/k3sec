@@ -29,6 +29,7 @@ Distroless images report `PRETTY_NAME="Distroless"` with `ID=debian`.
 | **dpkg, distroless** | `/var/lib/dpkg/status.d/<pkg>` | `status.d/<pkg>.md5sums` | coredns on the lab |
 | **apk** | `/lib/apk/db/installed` | `F:` directory + `R:` files | `o:` origin = source package |
 | **rpm** | `/var/lib/rpm/rpmdb.sqlite`, `/usr/lib/sysimage/rpm/rpmdb.sqlite`, Berkeley DB `/var/lib/rpm/Packages` | header `DIRNAMES` / `BASENAMES` / `DIRINDEXES` | build with `--features rpm`; source package from `SOURCERPM`; epoch kept; `gpg-pubkey` skipped |
+| **BusyBox, no package db** | `/bin/busybox` | the binary itself | version from its `BusyBox vX.Y.Z` banner, matched by CPE; only when the image has no package database (official Prometheus images) |
 
 Distro advisories are filed against the **source** package: Debian tracks
 `openssh`, not `openssh-server`; `libssl3` is matched as `openssl`, `libc6` as
