@@ -106,6 +106,9 @@ pub async fn run(
                     fill_exec_path(&mut ev);
                     // Read now, while the process (and its mount namespace) lives.
                     let facts = Facts::of(&ev, probe_kind, &container_id);
+                    if probe_kind == ProbeKind::Privesc && facts.became_root.is_none() {
+                        continue; // a credentials change that did not make it root
+                    }
                     let info = resolver.by_container_id(&container_id).await;
                     if info.is_none() && !not_pods.contains(&container_id) {
                         // Resolved later, off the reader: the next records keep flowing.
@@ -151,6 +154,11 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
     }
     if config.kinds.allows(ProbeKind::Exit) {
         attach_raw_tracepoint(ebpf, "k3sec_exit", "sched_process_exit")?;
+    }
+    if config.kinds.allows(ProbeKind::Privesc) {
+        if let Err(e) = attach_kprobe(ebpf, "k3sec_commit_creds", "commit_creds") {
+            tracing::warn!(error = %format!("{e:#}"), "privilege escalation events unavailable");
+        }
     }
     if config.kinds.allows(ProbeKind::Escape) {
         // Internal functions a kernel may have inlined: the other primitives keep going.
@@ -233,6 +241,7 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         kind::FILE_WRITE => ProbeKind::FileWrite,
         kind::EXIT => ProbeKind::Exit,
         kind::SECRET_READ => ProbeKind::SecretRead,
+        kind::CREDS => ProbeKind::Privesc,
         kind::UNIX_CONNECT | kind::MOUNT => match escape_technique(ev) {
             Some(_) => ProbeKind::Escape,
             None => return None,
@@ -352,6 +361,17 @@ fn build_event(
                 format!("escape: {what} ({comm})"),
             )
         }
+        ProbeKind::Privesc => {
+            let exe = facts.became_root.as_deref().unwrap_or_default();
+            (
+                "privesc",
+                Severity::Critical,
+                format!(
+                    "privilege escalation: uid {} became root, running {exe} ({comm})",
+                    ev.uid
+                ),
+            )
+        }
     };
 
     let mut builder = SecEvent::builder(Source::Ebpf, at)
@@ -404,7 +424,11 @@ fn maybe_request_scan(
     let trigger = match probe_kind {
         ProbeKind::Exec => ScanTrigger::Exec,
         ProbeKind::FileWrite => ScanTrigger::FileWrite,
-        ProbeKind::Connect | ProbeKind::Exit | ProbeKind::SecretRead | ProbeKind::Escape => return,
+        ProbeKind::Connect
+        | ProbeKind::Exit
+        | ProbeKind::SecretRead
+        | ProbeKind::Escape
+        | ProbeKind::Privesc => return,
     };
     let req = ScanRequest {
         trigger,
@@ -448,6 +472,17 @@ fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
         })
         .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
         .max()
+}
+
+/// The effective uid in `/proc/<pid>/status` (`Uid: real effective saved fs`).
+fn effective_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 /// What makes `ev` a container-escape primitive, if it is one.
@@ -527,6 +562,9 @@ struct Facts {
     ancestors: Vec<(u32, String)>,
     /// How the exec'd file itself is suspicious, if it is.
     anomaly: Option<ExecAnomaly>,
+    /// A credentials change made a non-root process root: its new effective
+    /// uid and the binary it runs.
+    became_root: Option<String>,
 }
 
 /// Where an exec'd binary lives, when that is itself a signal.
@@ -589,6 +627,17 @@ impl ExecAnomaly {
 impl Facts {
     fn of(ev: &Event, kind: ProbeKind, container_id: &str) -> Self {
         let mut facts = Facts::default();
+        if kind == ProbeKind::Privesc {
+            let status =
+                std::fs::read_to_string(format!("/proc/{}/status", ev.pid)).unwrap_or_default();
+            if effective_uid(&status) == Some(0) {
+                let exe = std::fs::read_link(format!("/proc/{}/exe", ev.pid))
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                facts.became_root = Some(exe);
+            }
+            return facts;
+        }
         if kind == ProbeKind::Exec {
             let path = cstr(&ev.filename[..FILENAME_LEN]);
             facts.drift = !path.is_empty()
@@ -764,6 +813,9 @@ fn payload(
             obj["dest"] = serde_json::json!(format_dest(ev));
         }
         ProbeKind::Exit => {}
+        ProbeKind::Privesc => {
+            obj["old_uid"] = serde_json::json!(ev.uid);
+        }
     }
     if let Some(info) = info {
         obj["namespace"] = serde_json::json!(info.namespace);
@@ -906,5 +958,14 @@ mod tests {
         assert!(t(kind::MOUNT, "", "mount", "cgroup2").is_some());
         assert!(t(kind::MOUNT, "", "runc:[2:INIT]", "cgroup2").is_none());
         assert!(t(kind::MOUNT, "", "mount", "tmpfs").is_none());
+    }
+
+    #[test]
+    fn effective_uid_from_status() {
+        let status =
+            "Name:\tpy\nUmask:\t0022\nUid:\t65534\t0\t0\t0\nGid:\t65534\t65534\t65534\t65534\n";
+        assert_eq!(effective_uid(status), Some(0));
+        assert_eq!(effective_uid("Uid:\t1000\t1000\t1000\t1000\n"), Some(1000));
+        assert_eq!(effective_uid("Name: x\n"), None);
     }
 }

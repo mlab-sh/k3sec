@@ -44,6 +44,8 @@ pub enum ProbeKind {
     /// `core_pattern` write, a connect to the container runtime's socket, a
     /// host device or cgroup mount.
     Escape,
+    /// A non-root process becomes root (setuid binary, setuid call).
+    Privesc,
 }
 
 impl ProbeKind {
@@ -56,6 +58,7 @@ impl ProbeKind {
             ProbeKind::Exit => "exit",
             ProbeKind::SecretRead => "secret_read",
             ProbeKind::Escape => "escape",
+            ProbeKind::Privesc => "privesc",
         }
     }
 }

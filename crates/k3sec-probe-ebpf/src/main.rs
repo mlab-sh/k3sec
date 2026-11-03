@@ -296,6 +296,25 @@ fn try_mount(ctx: &ProbeContext) -> Result<(), i64> {
     Ok(())
 }
 
+/// kprobe: `commit_creds(struct cred *new)`, where every change of identity
+/// lands (setuid calls, a setuid binary's exec, capset). Only a non-root
+/// process's: the uid in the event is the old one, userspace reads the new
+/// one from `/proc/<pid>/status` (the `struct cred` layout varies by kernel).
+#[kprobe]
+pub fn k3sec_commit_creds(_ctx: ProbeContext) -> u32 {
+    if bpf_get_current_uid_gid() as u32 == 0 {
+        return 0;
+    }
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return 0;
+    };
+    // SAFETY: as in `try_execve`; `fill_common` initializes every field.
+    unsafe { fill_common(entry.as_mut_ptr(), kind::CREDS) };
+    entry.submit(0);
+    0
+}
+
 /// kprobe: `tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int len)`.
 #[kprobe]
 pub fn k3sec_tcp_v4_connect(ctx: ProbeContext) -> u32 {

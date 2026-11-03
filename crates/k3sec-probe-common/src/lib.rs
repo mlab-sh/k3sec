@@ -23,6 +23,8 @@ pub mod kind {
     pub const UNIX_CONNECT: u32 = 5;
     /// A new mount (`aux` = filesystem type).
     pub const MOUNT: u32 = 6;
+    /// A non-root process's credentials change (`uid` = the old one).
+    pub const CREDS: u32 = 7;
 }
 
 /// Address family values (as in `<sys/socket.h>`), for `Event::af`.
