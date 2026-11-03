@@ -33,8 +33,9 @@ use crate::pipeline::{Deps, Pipeline, States};
 use crate::protocol::{self, ErrorBody, ErrorCode, HostMsg, ToolMsg, TOOL_PROTOCOL_VERSION};
 use crate::stream::Stream;
 
-/// Batches are cut at least this often.
-const BATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// Batches are cut at least this often; a critical event cuts one at once.
+/// Each batch is an envelope, a relay POST and an insert on the mlab side.
+const BATCH_INTERVAL: Duration = Duration::from_secs(10);
 /// A status unchanged (counters aside) is sent again this often: under mlab's
 /// 180 s "silent node" mark. A change is sent within `STATUS_CHECK`.
 const HEARTBEAT: Duration = Duration::from_secs(150);
