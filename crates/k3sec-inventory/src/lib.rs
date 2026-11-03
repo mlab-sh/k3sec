@@ -13,6 +13,7 @@
 //! [`PodContainer`]: k3sec_core::PodContainer
 
 pub mod cache;
+pub mod cvss;
 pub mod events;
 pub mod inventory;
 pub mod lang;

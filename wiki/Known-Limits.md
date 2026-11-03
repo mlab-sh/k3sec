@@ -47,10 +47,12 @@ What k3sec does **not** see yet, and how it shows up.
 - **Source-package noise.** Distro advisories are filed per source package: a
   dormant `linux-libc-dev` (kernel headers) carries every Debian kernel CVE
   (httpd: 9492 vulns, 104 loaded). `--only-loaded` cuts it.
-- **Enrichment budget.** Per-CVE CVSS / EU KEV lookups are capped at 800 per
-  run, loaded code first; the rest keep the advisory's severity (often
-  `unknown` for Debian). KEV (CISA) covers every CVE through the bulk catalogue.
-  EU KEV only for enriched CVEs.
+- **Enrichment budget.** A CVSS v3 vector in the advisory is scored locally
+  (most Debian, Red Hat and GHSA records carry one). Per-CVE lookups (CVSS for
+  the rest, EU KEV) are capped at 800 per run, loaded code first; beyond, the
+  advisory's severity stays (often `unknown` for Debian). httpd 2.4.57: 8 723
+  unscored CVEs out of 9 698 before local scoring, 2 069 after. KEV (CISA)
+  covers every CVE through the bulk catalogue; EU KEV only enriched CVEs.
 - **Kernel** only with `--match-kernel`, by upstream version: NVD's CPE data
   ignores distro backports (9826 hits for `6.8.0`).
 - **Anonymous API tier**: 512 packages per request, one scan every 10 s. k3sec

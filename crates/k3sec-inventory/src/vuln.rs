@@ -82,6 +82,27 @@ pub struct Advisory {
     pub database_specific: Option<serde_json::Value>,
     #[serde(default)]
     pub affected: Vec<Affected>,
+    /// CVSS vectors (`{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/…"}`).
+    #[serde(default)]
+    pub severity: Vec<OsvSeverity>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OsvSeverity {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub score: String,
+}
+
+impl Advisory {
+    /// The highest CVSS v3 base score among its vectors, scored locally.
+    pub fn cvss_v3(&self) -> Option<f64> {
+        self.severity
+            .iter()
+            .filter_map(|s| crate::cvss::v3_base_score(&s.score))
+            .reduce(f64::max)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -209,7 +230,8 @@ pub struct ImageVulns {
 const CHUNK: usize = 512;
 /// Concurrent CVE enrichment requests.
 const ENRICH_CONCURRENCY: usize = 8;
-/// CVEs enriched one by one per run. A single dormant `linux-libc-dev` drags
+/// CVEs enriched one by one per run, those whose advisories carry no CVSS v3
+/// vector (the others are scored locally). A single dormant `linux-libc-dev` drags
 /// in the ~9k CVEs Debian files against its `linux` source package.
 const ENRICH_MAX: usize = 800;
 
@@ -489,6 +511,7 @@ pub fn findings_for(
             .map(VulnSeverity::from_label)
             .unwrap_or(VulnSeverity::Unknown);
         let fixed = fixed_version(adv, coord, installed);
+        let score = adv.cvss_v3();
         // A distro errata (RLSA-…) can fix several CVEs: one finding each.
         for id in cves_of(adv) {
             let f = by_id.entry(id.clone()).or_insert_with(|| Finding {
@@ -507,6 +530,10 @@ pub fn findings_for(
             });
             f.advisories.push(adv.id.clone());
             f.severity = f.severity.max(label);
+            if let Some(s) = score.filter(|s| f.cvss.is_none_or(|c| *s > c)) {
+                f.cvss = Some(s);
+                f.severity = VulnSeverity::from_cvss(s);
+            }
             if f.fixed.is_none() {
                 f.fixed = fixed.clone();
             }
