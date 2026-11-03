@@ -1,5 +1,6 @@
 //! rpm: the SQLite rpmdb (`/var/lib/rpm/rpmdb.sqlite`, RHEL/Rocky/Alma 9+,
-//! Fedora 33+). Each row of `Packages` is a binary rpm header blob.
+//! Fedora 33+; `/usr/lib/sysimage/rpm/rpmdb.sqlite` on Fedora 36+, RHEL 10 and
+//! Hummingbird). Each row of `Packages` is a binary rpm header blob.
 //! Berkeley DB / NDB rpmdbs (EL8 and older) are not supported.
 
 use anyhow::{Context, Result};
@@ -24,8 +25,15 @@ const TYPE_STRING: u32 = 6;
 const TYPE_STRING_ARRAY: u32 = 8;
 const TYPE_I18NSTRING: u32 = 9;
 
+/// Where the SQLite rpmdb lives: the historical path, then the one rpm moved
+/// to (Fedora 36+, RHEL 10, Hummingbird), which may have no `/var/lib/rpm`.
+pub const SQLITE_PATHS: [&str; 2] = [
+    "/var/lib/rpm/rpmdb.sqlite",
+    "/usr/lib/sysimage/rpm/rpmdb.sqlite",
+];
+
 pub fn read(fs: &Rootfs) -> Option<Result<Vec<OsPackage>>> {
-    let path = fs.host_path("/var/lib/rpm/rpmdb.sqlite")?;
+    let path = SQLITE_PATHS.iter().find_map(|p| fs.host_path(p))?;
     Some(read_copy(&path))
 }
 
@@ -199,6 +207,30 @@ mod tests {
         assert_eq!(p.version, "1:3.0.7-27.el9");
         assert_eq!(p.source.as_deref(), Some("openssl"));
         assert_eq!(p.files, ["/usr/lib64/libssl.so.3", "/etc/ssl.cnf"]);
+    }
+
+    #[test]
+    fn reads_rpmdb_under_usr_lib_sysimage() {
+        // Hummingbird: no /var/lib/rpm at all, the db only at its new home.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("usr/lib/sysimage/rpm");
+        std::fs::create_dir_all(&db).unwrap();
+        let conn = Connection::open(db.join("rpmdb.sqlite")).unwrap();
+        conn.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)", [])
+            .unwrap();
+        let blob = header(&[
+            (NAME, TYPE_STRING, s("nginx-core"), 1),
+            (VERSION, TYPE_STRING, s("1.30.6"), 1),
+            (RELEASE, TYPE_STRING, s("1.hum1"), 1),
+            (ARCH, TYPE_STRING, s("x86_64"), 1),
+        ]);
+        conn.execute("INSERT INTO Packages (blob) VALUES (?1)", [blob]).unwrap();
+        drop(conn);
+
+        let pkgs = read(&Rootfs::new(dir.path())).unwrap().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "nginx-core");
+        assert_eq!(pkgs[0].version, "1.30.6-1.hum1");
     }
 
     #[test]

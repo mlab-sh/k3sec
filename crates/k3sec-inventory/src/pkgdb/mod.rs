@@ -77,7 +77,14 @@ fn read_rpm(fs: &Rootfs, warnings: &mut Vec<String>) -> Option<Vec<OsPackage>> {
 
 #[cfg(not(feature = "rpm"))]
 fn read_rpm(fs: &Rootfs, warnings: &mut Vec<String>) -> Option<Vec<OsPackage>> {
-    if fs.exists("/var/lib/rpm/rpmdb.sqlite") || fs.exists("/var/lib/rpm/Packages") {
+    if [
+        "/var/lib/rpm/rpmdb.sqlite",
+        "/usr/lib/sysimage/rpm/rpmdb.sqlite",
+        "/var/lib/rpm/Packages",
+    ]
+    .iter()
+    .any(|p| fs.exists(p))
+    {
         warnings.push(
             "rpm-based image: OS packages not inventoried (build k3sec with `--features rpm`)"
                 .to_string(),
