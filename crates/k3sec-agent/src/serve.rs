@@ -349,31 +349,85 @@ fn keeps(eff: &Effective, ev: &SecEvent) -> bool {
 }
 
 async fn inventories(mut rx: mpsc::Receiver<ImageInventory>, shared: Shared, writer: Writer) {
-    while let Some(mut inv) = rx.recv().await {
-        let changed = {
-            let Ok(s) = shared.lock() else { return };
-            let key = inv.key().to_string();
-            carry_over(&mut inv, s.inventories.get(&key))
-        };
-        if !changed {
-            // Rescanned the same (a `configure` restarts the watcher): mlab
-            // has it, a re-upload would only cost bandwidth. The containers
-            // seen now are kept for the next `inventory`.
-            if let Ok(mut s) = shared.lock() {
-                s.inventories.insert(inv.key().to_string(), inv);
+    let mut announcer = Announcer::default();
+    let mut tick = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        let keys = tokio::select! {
+            inv = rx.recv() => {
+                let Some(mut inv) = inv else { return };
+                let key = inv.key().to_string();
+                let Ok(mut s) = shared.lock() else { return };
+                // Rescanned the same (a `configure` restarts the watcher):
+                // mlab has it. The containers seen now are kept either way.
+                let changed = carry_over(&mut inv, s.inventories.get(&key));
+                s.inventories.insert(key.clone(), inv);
+                match changed && announcer.changed(&key, std::time::Instant::now()) {
+                    true => vec![key],
+                    false => continue,
+                }
             }
-            continue;
-        }
-        let ready = api::InventoryReady {
-            digest: inv.key().to_string(),
-            image: inv.image.clone(),
-            packages: inv.packages.len() as u32,
-            loaded: inv.count(k3sec_inventory::Reachability::Loaded) as u32,
+            _ = tick.tick() => announcer.due(std::time::Instant::now()),
         };
-        if let Ok(mut s) = shared.lock() {
-            s.inventories.insert(inv.key().to_string(), inv);
+        for key in keys {
+            let ready = shared.lock().ok().and_then(|s| {
+                s.inventories.get(&key).map(|inv| api::InventoryReady {
+                    digest: key.clone(),
+                    image: inv.image.clone(),
+                    packages: inv.packages.len() as u32,
+                    loaded: inv.count(k3sec_inventory::Reachability::Loaded) as u32,
+                })
+            });
+            if let Some(ready) = ready {
+                writer.event(api::event::INVENTORY_READY, &ready);
+            }
         }
-        writer.event(api::event::INVENTORY_READY, &ready);
+    }
+}
+
+/// An image announced again within this of its last announce waits for the
+/// end of it: the dormant → loaded promotions of a starting pod come in a
+/// burst, and each announce makes mlab fetch the whole inventory.
+const REANNOUNCE: Duration = Duration::from_secs(120);
+
+/// When each image was last announced, and those changed since.
+#[derive(Default)]
+struct Announcer {
+    sent: std::collections::HashMap<String, std::time::Instant>,
+    due: std::collections::BTreeSet<String>,
+}
+
+impl Announcer {
+    /// `key` changed: true when it is announced now, else it waits.
+    fn changed(&mut self, key: &str, now: std::time::Instant) -> bool {
+        if self
+            .sent
+            .get(key)
+            .is_some_and(|at| now.duration_since(*at) < REANNOUNCE)
+        {
+            self.due.insert(key.to_string());
+            return false;
+        }
+        self.sent.insert(key.to_string(), now);
+        true
+    }
+
+    /// The waiting images whose window is over, marked announced.
+    fn due(&mut self, now: std::time::Instant) -> Vec<String> {
+        let ready: Vec<String> = self
+            .due
+            .iter()
+            .filter(|k| {
+                self.sent
+                    .get(*k)
+                    .is_none_or(|at| now.duration_since(*at) >= REANNOUNCE)
+            })
+            .cloned()
+            .collect();
+        for k in &ready {
+            self.due.remove(k);
+            self.sent.insert(k.clone(), now);
+        }
+        ready
     }
 }
 
@@ -618,6 +672,21 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn promotions_are_announced_once_per_window() {
+        let mut a = Announcer::default();
+        let t0 = std::time::Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        assert!(a.changed("img", t0), "first: at once");
+        assert!(!a.changed("img", at(5)) && !a.changed("img", at(9)));
+        assert!(a.changed("other", at(9)), "another image is not held");
+        assert!(a.due(at(60)).is_empty());
+        assert_eq!(a.due(at(120)), ["img"], "both held changes in one");
+        assert!(a.due(at(130)).is_empty());
+        assert!(!a.changed("img", at(200)), "within the window of the flush");
+        assert!(a.changed("img", at(240)));
     }
 
     #[test]
