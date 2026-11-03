@@ -216,15 +216,19 @@ mod tests {
         let db = dir.path().join("usr/lib/sysimage/rpm");
         std::fs::create_dir_all(&db).unwrap();
         let conn = Connection::open(db.join("rpmdb.sqlite")).unwrap();
-        conn.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)", [])
-            .unwrap();
+        conn.execute(
+            "CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)",
+            [],
+        )
+        .unwrap();
         let blob = header(&[
             (NAME, TYPE_STRING, s("nginx-core"), 1),
             (VERSION, TYPE_STRING, s("1.30.6"), 1),
             (RELEASE, TYPE_STRING, s("1.hum1"), 1),
             (ARCH, TYPE_STRING, s("x86_64"), 1),
         ]);
-        conn.execute("INSERT INTO Packages (blob) VALUES (?1)", [blob]).unwrap();
+        conn.execute("INSERT INTO Packages (blob) VALUES (?1)", [blob])
+            .unwrap();
         drop(conn);
 
         let pkgs = read(&Rootfs::new(dir.path())).unwrap().unwrap();
