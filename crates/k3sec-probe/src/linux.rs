@@ -97,10 +97,13 @@ pub async fn run(
 
                 for mut ev in batch {
                     let at = chrono::Utc::now();
-                    fill_exec_path(&mut ev);
                     let Some((probe_kind, container_id)) = classify(&ev, &config, &stats) else {
                         continue;
                     };
+                    if let Some(pid) = local_pid(&ev, &container_id) {
+                        ev.pid = pid;
+                    }
+                    fill_exec_path(&mut ev);
                     let info = resolver.by_container_id(&container_id).await;
                     if info.is_none() && !not_pods.contains(&container_id) {
                         // Resolved later, off the reader: the next records keep flowing.
@@ -221,10 +224,10 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         return None;
     }
 
-    // Resolve pod context from the process cgroup; by the kernel's cgroup id
-    // when the process is already gone (a short exec). Host processes (no
-    // container id) are dropped, this is a pod-scoped tool.
-    let container_id = container_id_of_pid(ev.pid).or_else(|| container_id_of_cgroup(ev.cgroup_id));
+    // Resolve pod context from the kernel's cgroup id, which cannot point at
+    // another process; from the PID when the cgroup tree is not v2. Host
+    // processes (no container id) are dropped, this is a pod-scoped tool.
+    let container_id = container_id_of_cgroup(ev.cgroup_id).or_else(|| container_id_of_pid(ev.pid));
     let Some(container_id) = container_id else {
         stats.host.fetch_add(1, Ordering::Relaxed);
         return None;
@@ -329,6 +332,33 @@ fn maybe_request_scan(
 }
 
 /// Convert a NUL-padded byte field to a `String` (lossy, trimmed at first NUL).
+/// The kernel reports PIDs of the root namespace. When k3sec runs in a nested
+/// one (a node that is itself a container: k3d, kind, k3s in Docker) those
+/// exist nowhere in its `/proc`: the event's process is then taken to be the
+/// newest of its container with its name. `None` keeps the kernel's PID.
+fn local_pid(ev: &Event, container_id: &str) -> Option<u32> {
+    /// The root PID namespace's inode (`PROC_PID_INIT_INO`).
+    const INIT_PID_NS: u64 = 0xEFFF_FFFC;
+    static NESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let nested = *NESTED.get_or_init(|| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self/ns/pid").is_ok_and(|m| m.ino() != INIT_PID_NS)
+    });
+    if !nested || container_id_of_pid(ev.pid).as_deref() == Some(container_id) {
+        return None;
+    }
+    let comm = cstr(&ev.comm[..COMM_LEN]);
+    std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|p| {
+            std::fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| c.trim_end() == comm)
+        })
+        .filter(|&p| container_id_of_pid(p).as_deref() == Some(container_id))
+        .max()
+}
+
 /// An exec record from the raw tracepoint has no path: read it now, while
 /// the process lives. Gone already, it keeps its name only.
 fn fill_exec_path(ev: &mut Event) {
