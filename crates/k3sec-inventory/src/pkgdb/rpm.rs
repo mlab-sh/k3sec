@@ -363,7 +363,7 @@ mod tests {
             (ARCH, TYPE_STRING, s("x86_64"), 1),
         ]);
         let values = bdb_values(&bdb(&blob, 0)).unwrap();
-        assert_eq!(values, [blob.clone()]);
+        assert_eq!(values, std::slice::from_ref(&blob));
         let p = parse_header(&values[0]).unwrap();
         assert_eq!(
             (p.name.as_str(), p.version.as_str()),
