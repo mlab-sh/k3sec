@@ -35,6 +35,9 @@ pub enum ProbeKind {
     Connect,
     /// Write-open of a file under a sensitive path.
     FileWrite,
+    /// A process ends. Only when asked for (`--kind exit`): it doubles the
+    /// volume of exec.
+    Exit,
 }
 
 impl ProbeKind {
@@ -44,6 +47,7 @@ impl ProbeKind {
             ProbeKind::Exec => "exec",
             ProbeKind::Connect => "connect",
             ProbeKind::FileWrite => "file_write",
+            ProbeKind::Exit => "exit",
         }
     }
 }
@@ -60,9 +64,9 @@ impl KindFilter {
         Self { kinds }
     }
 
-    /// Whether `kind` should be emitted.
+    /// Whether `kind` should be emitted. `exit` only when listed.
     pub fn allows(&self, kind: ProbeKind) -> bool {
-        self.kinds.is_empty() || self.kinds.contains(&kind)
+        self.kinds.contains(&kind) || (self.kinds.is_empty() && kind != ProbeKind::Exit)
     }
 
     /// True when no kind is filtered out.
@@ -191,6 +195,8 @@ mod tests {
         assert!(f.allows(ProbeKind::Exec));
         assert!(f.allows(ProbeKind::Connect));
         assert!(f.allows(ProbeKind::FileWrite));
+        assert!(!f.allows(ProbeKind::Exit), "exit only when asked for");
+        assert!(KindFilter::new(vec![ProbeKind::Exit]).allows(ProbeKind::Exit));
     }
 
     #[test]

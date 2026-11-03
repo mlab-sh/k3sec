@@ -149,6 +149,9 @@ fn attach_programs(ebpf: &mut Ebpf, config: &ProbeConfig) -> Result<()> {
             );
         }
     }
+    if config.kinds.allows(ProbeKind::Exit) {
+        attach_raw_tracepoint(ebpf, "k3sec_exit", "sched_process_exit")?;
+    }
     if config.kinds.allows(ProbeKind::FileWrite) {
         // An internal function: a kernel may have inlined it. Then no
         // file_write, but exec and connect keep going.
@@ -213,6 +216,7 @@ fn classify(ev: &Event, config: &ProbeConfig, stats: &DropStats) -> Option<(Prob
         kind::EXEC => ProbeKind::Exec,
         kind::CONNECT => ProbeKind::Connect,
         kind::FILE_WRITE => ProbeKind::FileWrite,
+        kind::EXIT => ProbeKind::Exit,
         _ => {
             stats.malformed.fetch_add(1, Ordering::Relaxed);
             return None;
@@ -275,6 +279,12 @@ fn build_event(
                     Severity::Info,
                     format!("exec {comm} (path unknown: process gone)"),
                 )
+            } else if let Some((_, parent)) = facts.ancestors.first() {
+                (
+                    "exec",
+                    Severity::Info,
+                    format!("exec {bin} ({comm}) by {parent}"),
+                )
             } else {
                 ("exec", Severity::Info, format!("exec {bin} ({comm})"))
             }
@@ -291,6 +301,7 @@ fn build_event(
                 format!("write {path} ({comm})"),
             )
         }
+        ProbeKind::Exit => ("exit", Severity::Info, format!("exit {comm}")),
     };
 
     let mut builder = SecEvent::builder(Source::Ebpf, at)
@@ -303,6 +314,17 @@ fn build_event(
         .meta("container_id", short_id(container_id));
     if facts.drift {
         builder = builder.meta("drift", "true");
+    }
+    if let Some((ppid, _)) = facts.ancestors.first() {
+        let chain: Vec<&str> = facts
+            .ancestors
+            .iter()
+            .rev()
+            .map(|(_, c)| c.as_str())
+            .collect();
+        builder = builder
+            .meta("ppid", ppid.to_string())
+            .meta("ancestry", chain.join(" > "));
     }
 
     if let Some(info) = &info {
@@ -329,7 +351,7 @@ fn maybe_request_scan(
     let trigger = match probe_kind {
         ProbeKind::Exec => ScanTrigger::Exec,
         ProbeKind::FileWrite => ScanTrigger::FileWrite,
-        ProbeKind::Connect => return, // no bytes to scan
+        ProbeKind::Connect | ProbeKind::Exit => return, // no bytes to scan
     };
     let req = ScanRequest {
         trigger,
@@ -381,6 +403,8 @@ struct Facts {
     /// The exec'd file is in the container's writable layer: added or
     /// modified after the container started, so not the image's.
     drift: bool,
+    /// The process's ancestors in its container, nearest first: `(pid, comm)`.
+    ancestors: Vec<(u32, String)>,
 }
 
 impl Facts {
@@ -391,9 +415,43 @@ impl Facts {
             facts.drift = !path.is_empty()
                 && upper_dir(container_id, ev.pid)
                     .is_some_and(|upper| in_upper_layer(&upper, &path));
+            facts.ancestors = ancestors(ev.pid, container_id);
         }
         facts
     }
+}
+
+/// Up to 8 ancestors of `pid` in the same container, nearest first: the
+/// chain stops at the container's first process (its parent is the runtime).
+fn ancestors(pid: u32, container_id: &str) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    let mut pid = pid;
+    for _ in 0..8 {
+        let Some(ppid) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| parent_of(&s))
+        else {
+            break;
+        };
+        if ppid == 0 || container_id_of_pid(ppid).as_deref() != Some(container_id) {
+            break;
+        }
+        let comm = std::fs::read_to_string(format!("/proc/{ppid}/comm")).unwrap_or_default();
+        out.push((ppid, comm.trim_end().to_string()));
+        pid = ppid;
+    }
+    out
+}
+
+/// The 4th field of `/proc/<pid>/stat`, after the parenthesized command
+/// (which may hold spaces and parentheses itself).
+fn parent_of(stat: &str) -> Option<u32> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 /// The writable (upper) layer of a container's root overlay, as a path
@@ -518,6 +576,7 @@ fn payload(
         ProbeKind::Connect => {
             obj["dest"] = serde_json::json!(format_dest(ev));
         }
+        ProbeKind::Exit => {}
     }
     if let Some(info) = info {
         obj["namespace"] = serde_json::json!(info.namespace);
@@ -577,5 +636,17 @@ mod tests {
         assert!(in_upper_layer(dir.path(), "/tmp/x"));
         assert!(!in_upper_layer(dir.path(), "/bin/sh"));
         assert!(!in_upper_layer(dir.path(), "/tmp"));
+    }
+
+    #[test]
+    fn parent_from_stat() {
+        assert_eq!(
+            parent_of("4242 (nginx: worker) S 4200 4200 4200 0 -1"),
+            Some(4200)
+        );
+        assert_eq!(parent_of("7 (a) b) R 1 7 7"), Some(1));
+        assert_eq!(parent_of("garbage"), None);
+        // This test's own parent is in no container of that name: none listed.
+        assert!(ancestors(std::process::id(), "no-such-container").is_empty());
     }
 }

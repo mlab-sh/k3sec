@@ -91,6 +91,24 @@ pub fn k3sec_execve_raw(_ctx: RawTracePointContext) -> i32 {
     0
 }
 
+/// `sched_process_exit`, as a raw tracepoint (no field is read): a process,
+/// not each of its threads, ends.
+#[raw_tracepoint(tracepoint = "sched_process_exit")]
+pub fn k3sec_exit(_ctx: RawTracePointContext) -> i32 {
+    let id = bpf_get_current_pid_tgid();
+    if (id >> 32) as u32 != id as u32 {
+        return 0; // a thread, not the group leader
+    }
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        bump_drops();
+        return 0;
+    };
+    // SAFETY: as in `try_execve`; `fill_common` initializes every field.
+    unsafe { fill_common(entry.as_mut_ptr(), kind::EXIT) };
+    entry.submit(0);
+    0
+}
+
 // ---------------------------------------------------------------------------
 // file_write (openat with write intent, under a sensitive path)
 // ---------------------------------------------------------------------------

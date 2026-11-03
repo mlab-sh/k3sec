@@ -8,6 +8,7 @@ came from:
 | `exec` | tracepoint `sched:sched_process_exec` | info | every successful exec in a container |
 | `connect` | kprobes `tcp_v4_connect`, `tcp_v6_connect` | info | outbound TCP, except to `0.0.0.0`, `::` and loopback (health checks) |
 | `file_write` | kprobe `do_sys_openat2` (every `open`, `openat`, `openat2`, `creat` with write flags) | warning | paths under `/etc/`, `/usr/bin/`, `/root/`, `/var/run/secrets` (in-kernel) |
+| `exit` | raw tracepoint `sched_process_exit` | info | a process (not a thread) ends; only with `--kind exit` |
 
 ```bash
 sudo k3sec watch --ebpf
@@ -22,6 +23,7 @@ Only the programs for the requested `--kind`s are attached.
 
 | Detection | Event | How |
 |-----------|-------|-----|
+| **Ancestry** | `exec`: "exec /bin/sh (sh) by nginx", `ppid`, `ancestry` = `nginx > sh` | the parents of the process in its container, read from `/proc/<pid>/stat` (8 at most, up to the container's first process) |
 | **Drift** | `exec`, severity critical, `drift=true`, "a binary not in the image" | the exec'd file is in the container's writable overlay layer (`upperdir` of its root mount): added or modified after the container started. The layer is read once per container, through another process of it when the exec is already gone |
 
 ## Build

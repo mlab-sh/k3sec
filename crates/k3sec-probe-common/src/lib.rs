@@ -17,6 +17,7 @@ pub mod kind {
     pub const EXEC: u32 = 0;
     pub const CONNECT: u32 = 1;
     pub const FILE_WRITE: u32 = 2;
+    pub const EXIT: u32 = 3;
 }
 
 /// Address family values (as in `<sys/socket.h>`), for `Event::af`.
