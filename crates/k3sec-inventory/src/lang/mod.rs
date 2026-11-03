@@ -2,6 +2,7 @@
 //! directories for lockfiles, plus Go build info from executables and Maven
 //! coordinates from Java archives.
 
+pub mod apps;
 pub mod gems;
 pub mod gobuild;
 pub mod jar;
@@ -34,6 +35,8 @@ const ROOTS: &[&str] = &[
     "/usr/local/bin",
     "/usr/local/lib",
     "/usr/local/bundle",
+    "/usr/share/dotnet",
+    "/usr/lib/dotnet",
     // Go and Rust binaries anywhere on the PATH, running or not: only their
     // build info section is read (mongosh in /usr/bin, the Go toolchain).
     "/usr/local/go",
@@ -104,6 +107,7 @@ pub fn scan(
         python: Vec::new(),
         node_trees: Vec::new(),
         gemspecs: Vec::new(),
+        apps: Vec::new(),
     };
     let mut walked: Vec<String> = Vec::new();
     for root in ROOTS
@@ -177,6 +181,27 @@ pub fn scan(
         }
     }
 
+    // PEAR packages and Bitnami's components: plain ecosystem coordinates.
+    for (path, app) in &walk.apps {
+        let Ok(content) = fs.read_string(path, 16 * 1024 * 1024) else {
+            continue;
+        };
+        match app {
+            App::Pear => {
+                if let Some((name, version)) = apps::pear_registry(&content) {
+                    let name = format!("pear/{}", name.to_ascii_lowercase());
+                    push("Packagist", &name, &version, path, Vec::new());
+                }
+            }
+            App::Bitnami => {
+                for (name, version) in apps::bitnami_spdx(&content) {
+                    push("Bitnami", &name, &version, path, Vec::new());
+                }
+            }
+            App::WordPress | App::WordPressPlugin => {}
+        }
+    }
+
     // Installed Python distributions; a mapped C extension makes one loaded.
     for dist in &walk.python {
         let meta = ["METADATA", "PKG-INFO"]
@@ -237,6 +262,41 @@ pub fn scan(
             }
         }
     }
+    // WordPress: the core by CPE, its plugins listed (no feed names them).
+    for (path, app) in &walk.apps {
+        let Ok(content) = fs.read_string(path, 1024 * 1024) else {
+            continue;
+        };
+        let p = match app {
+            App::WordPress => apps::wordpress_version(&content).map(|v| {
+                let mut p = Package::new(
+                    "wordpress",
+                    &v,
+                    PackageKind::Lang,
+                    purl::build("generic", None, "wordpress", &v, &[]),
+                );
+                p.coordinate = Some(Coordinate::Cpe {
+                    cpe: format!("cpe:2.3:a:wordpress:wordpress:{v}:*:*:*:*:*:*:*"),
+                });
+                p
+            }),
+            App::WordPressPlugin => apps::wordpress_plugin_version(&content).map(|v| {
+                let slug = path.rsplit('/').nth(1).unwrap_or("");
+                Package::new(
+                    slug,
+                    &v,
+                    PackageKind::Lang,
+                    purl::build("generic", Some("wordpress-plugin"), slug, &v, &[]),
+                )
+            }),
+            App::Pear | App::Bitnami => None,
+        };
+        if let Some(mut p) = p.filter(|p| !out.iter().any(|o| o.purl == p.purl)) {
+            p.location = Some(path.clone());
+            out.push(p);
+        }
+    }
+
     // A jar named from its file alone, its group unknown: listed, not matched.
     for p in out.iter_mut() {
         if p.purl.starts_with("pkg:maven/") && !p.name.contains(':') {
@@ -264,6 +324,40 @@ struct Walk<'a> {
     node_trees: Vec<String>,
     /// Installed gems' `specifications/*.gemspec`.
     gemspecs: Vec<String>,
+    /// Manifests of software no package manager installed.
+    apps: Vec<(String, App)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum App {
+    Pear,
+    WordPress,
+    WordPressPlugin,
+    Bitnami,
+}
+
+impl App {
+    /// `path`: the file, `dir`: its directory, `name`: its file name.
+    fn of(path: &str, dir: &str, name: &str) -> Option<Self> {
+        if dir.ends_with("/.registry") && name.ends_with(".reg") {
+            Some(Self::Pear)
+        } else if path.ends_with("/wp-includes/version.php") {
+            Some(Self::WordPress)
+        } else if dir
+            .rsplit_once("/wp-content/plugins/")
+            .is_some_and(|(_, slug)| !slug.contains('/') && name == format!("{slug}.php"))
+        {
+            Some(Self::WordPressPlugin)
+        } else if path.starts_with("/opt/bitnami/")
+            && name.starts_with(".spdx-")
+            && (name.ends_with(".spdx") || name.ends_with(".json"))
+        {
+            // `.spdx-<name>.json` links to the `.spdx` file (links are not followed).
+            Some(Self::Bitnami)
+        } else {
+            None
+        }
+    }
 }
 
 impl Walk<'_> {
@@ -312,6 +406,8 @@ impl Walk<'_> {
                     }
                 } else if gems::is_installed_gemspec(&child) {
                     self.gemspecs.push(child);
+                } else if let Some(app) = App::of(&child, path, &name) {
+                    self.apps.push((child, app));
                 } else if meta.permissions().mode() & 0o111 != 0
                     || (is_java_archive(&name) && meta.len() <= self.limits.max_binary_size)
                 {
@@ -400,6 +496,50 @@ mod tests {
             ["pg@1.5.9", "rails@7.1.0"],
             "bullet is a dev group gem, not installed"
         );
+    }
+
+    #[test]
+    fn pear_wordpress_bitnami_dotnet_in_the_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let put = |p: &str, c: &str| {
+            let f = dir.path().join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, c).unwrap();
+        };
+        put(
+            "usr/local/lib/php/.registry/archive_tar.reg",
+            r#"a:1:{s:4:"name";s:11:"Archive_Tar";s:7:"version";a:1:{s:7:"release";s:5:"1.6.0";}}"#,
+        );
+        put(
+            "var/www/html/wp-includes/version.php",
+            "<?php\n$wp_version = '6.9.4';\n",
+        );
+        put(
+            "var/www/html/wp-content/plugins/akismet/akismet.php",
+            "<?php\n/*\n * Version: 5.6\n */",
+        );
+        put(
+            "opt/bitnami/postgresql/.spdx-postgresql.spdx",
+            r#"{"packages":[{"name":"postgresql","versionInfo":"18.6.0-25"}]}"#,
+        );
+        put(
+            "usr/share/dotnet/shared/Microsoft.NETCore.App/8.0.33/Microsoft.NETCore.App.deps.json",
+            r#"{"libraries":{"Microsoft.NETCore.App.Runtime.linux-x64/8.0.33":{"type":"runtimepack"}}}"#,
+        );
+
+        let pkgs = scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default());
+        let purls: Vec<&str> = pkgs.iter().map(|p| p.purl.as_str()).collect();
+        for want in [
+            "pkg:composer/pear/archive_tar@1.6.0",
+            "pkg:generic/wordpress@6.9.4",
+            "pkg:generic/wordpress-plugin/akismet@5.6",
+            "pkg:bitnami/postgresql@18.6.0",
+            "pkg:nuget/Microsoft.NETCore.App.Runtime.linux-x64@8.0.33",
+        ] {
+            assert!(purls.contains(&want), "{want} missing from {purls:?}");
+        }
+        let plugin = pkgs.iter().find(|p| p.name == "akismet").unwrap();
+        assert_eq!(plugin.coordinate, None, "listed, not matched");
     }
 
     #[test]

@@ -14,6 +14,8 @@ pub enum Lockfile {
     PoetryLock,
     ComposerLock,
     GemfileLock,
+    /// .NET `<app>.deps.json`, and the shared runtimes' own.
+    DepsJson,
 }
 
 impl Lockfile {
@@ -27,6 +29,7 @@ impl Lockfile {
             "poetry.lock" => Self::PoetryLock,
             "composer.lock" => Self::ComposerLock,
             "Gemfile.lock" => Self::GemfileLock,
+            n if n.ends_with(".deps.json") => Self::DepsJson,
             _ => return None,
         })
     }
@@ -40,6 +43,7 @@ impl Lockfile {
             Self::Requirements | Self::PoetryLock => "PyPI",
             Self::ComposerLock => "Packagist",
             Self::GemfileLock => "RubyGems",
+            Self::DepsJson => "NuGet",
         }
     }
 
@@ -53,6 +57,7 @@ impl Lockfile {
             Self::Requirements => requirements(content),
             Self::ComposerLock => composer_lock(content),
             Self::GemfileLock => gemfile_lock(content),
+            Self::DepsJson => deps_json(content),
         }
     }
 }
@@ -214,6 +219,30 @@ fn gemfile_lock(content: &str) -> Vec<(String, String)> {
     out
 }
 
+/// `libraries` of a .deps.json: `"Name/Version": {"type": "package"}`. The
+/// app itself (`project`) has no advisories; a shared runtime lists itself
+/// as a `runtimepack` (`Microsoft.AspNetCore.App.Runtime.linux-x64/8.0.33`).
+fn deps_json(content: &str) -> Vec<(String, String)> {
+    let Ok(doc) = serde_json::from_str::<Value>(content) else {
+        return Vec::new();
+    };
+    let Some(libs) = doc.get("libraries").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    libs.iter()
+        .filter(|(_, v)| {
+            matches!(
+                v.get("type").and_then(Value::as_str),
+                Some("package" | "runtimepack")
+            )
+        })
+        .filter_map(|(k, _)| {
+            let (name, version) = k.rsplit_once('/')?;
+            Some((name.to_string(), version.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +350,30 @@ mod tests {
                 ("commonmarker".to_string(), "2.3.2".to_string()),
                 ("rails".to_string(), "8.0.0.beta1".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn deps_json_packages_and_runtime_packs() {
+        let deps = r#"{"libraries": {
+            "AspNetCoreRazorApp/1.0.0": {"type": "project"},
+            "Newtonsoft.Json/13.0.1": {"type": "package", "serviceable": true},
+            "Microsoft.AspNetCore.App.Runtime.linux-x64/8.0.33": {"type": "runtimepack"}}}"#;
+        let mut got = deps_json(deps);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (
+                    "Microsoft.AspNetCore.App.Runtime.linux-x64".to_string(),
+                    "8.0.33".to_string()
+                ),
+                ("Newtonsoft.Json".to_string(), "13.0.1".to_string())
+            ]
+        );
+        assert_eq!(
+            Lockfile::from_name("app.deps.json"),
+            Some(Lockfile::DepsJson)
         );
     }
 }

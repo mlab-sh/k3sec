@@ -49,6 +49,8 @@ pub fn lang(ecosystem: &str, name: &str, version: &str) -> String {
             (None, name.to_ascii_lowercase().replace(['_', '.'], "-")),
         ),
         "Packagist" => ("composer", split(name)),
+        "NuGet" => ("nuget", (None, name.to_string())),
+        "Bitnami" => ("bitnami", (None, name.to_string())),
         "RubyGems" => ("gem", (None, name.to_string())),
         "Maven" => match name.split_once(':') {
             Some((g, a)) => ("maven", (Some(g.to_string()), a.to_string())),

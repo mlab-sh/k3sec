@@ -88,6 +88,10 @@ scoped and nested ones included, 20 000 modules at most (Ghost: 2 301).
 | `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` | PyPI | `Name` / `Version`; `RECORD` lists the files, a mapped `.so` makes the distribution **loaded**. Inside `site-packages` only these are read (Home Assistant: 1 627 distributions) |
 | `composer.lock` | Packagist | `packages` + `packages-dev` |
 | `Gemfile.lock` | RubyGems | top-level `GEM` specs, the platform suffix dropped (`2.3.2-x86_64-linux` is `2.3.2`); when installed gems are found, only the entries installed (a lockfile also names its `development` / `test` groups). An installed gem's own `Gemfile.lock` is ignored |
+| `*.deps.json` (apps, `/usr/share/dotnet/shared/*`) | NuGet | `libraries` of type `package` and `runtimepack`: the .NET and ASP.NET Core runtimes themselves |
+| PEAR `.registry/*.reg` | Packagist | as `pear/<name>`, the name advisories use (`pear/archive_tar`) |
+| WordPress `wp-includes/version.php` | CPE | the core (`wordpress:wordpress`); plugins from `wp-content/plugins/<slug>/<slug>.php` headers are listed, not matched |
+| Bitnami `/opt/bitnami/*/.spdx-*.spdx` | Bitnami | the components Bitnami compiled (PostgreSQL, PostGIS, GEOS…), build revision dropped |
 | `specifications/*.gemspec` | RubyGems | installed gems, `default/` included (Ruby's own): the `# stub:` line. `ruby:3.3`: 86, as syft |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |
 | **Rust binaries** (`cargo auditable`) | crates.io | the `.dep-v0` section (zlib JSON): every registry crate (`uv`: 481, a conda extension: 514). Rust libraries a distro package ships (`librav1e`) are left to the package |
