@@ -80,14 +80,19 @@ The same fields as k3sec's NDJSON output, `timestamp` in Unix milliseconds:
 |---|---|
 | `k8s-event` | `type`, `reason`, `component`, `count`, `host` |
 | `k8s-log` | `pod`, `container` |
-| `ebpf` (all) | `pid`, `uid`, `comm`, `container_id` (12 hex), `pod`, `container` |
+| `ebpf` (all) | `pid`, `uid`, `comm`; per kind `drift`, `exec_anomaly`, `ancestry`, `ppid`, `mitre`, `repeats`, `cryptominer` |
 | `ebpf` `exec` | + `sha256` of the executed binary, when it could be read (for hash reputation on the mlab side) |
-| `yara` `detection` | `rules`, `rule_namespace`, `tags`, `artifact`, `trigger`, `pid`, `comm`, `pod`, `container` |
+| `yara` `detection` | `rules`, `rule_namespace`, `tags`, `artifact`, `trigger`, `pid`, `comm` |
 | `vuln` `vulnerability` | `cve`, `package`, `version`, `purl`, `vuln_severity`, `cvss`, `kev`, `fixed`, `reachability`, `image`, `digest`, `pod`, `container` |
 | `vuln` `vuln_summary` | `vulns`, `loaded`, `kev_loaded`, `packages`, `unscanned`, `error`, `image`, `digest`, `pod`, `container` |
 
-`ebpf` `connect` payloads carry `dest` (`ip:port`), for IP enrichment on the
-mlab side. In agent mode `vuln` events are not produced by the tool: matching
+`pod` and `container` are left out of `metadata` when they are the event's
+`object` (`<pod>/<container>`), and the payload carries only what the event
+does not say elsewhere: for `ebpf`, the full `container_id` and `path`
+(exec, file_write, secret_read), `dest` (connect, `ip:port`, for IP
+enrichment on the mlab side), `addr` (listen, accept, udp), `server` and
+`query` (dns), `technique` (escape), `old_uid` (privesc); for `yara`,
+`matches`. In agent mode `vuln` events are not produced by the tool: matching
 happens in mlab from the inventory (below).
 
 ## Config and the local policy

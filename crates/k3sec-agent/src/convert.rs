@@ -5,6 +5,7 @@ use k3sec_core::{NodeVersions, SecEvent, Severity, Source};
 use k3sec_inventory::{Coordinate, ImageInventory, PackageKind};
 
 pub fn event(ev: &SecEvent) -> api::SecEvent {
+    let (metadata, payload) = trimmed(ev);
     api::SecEvent {
         source: match ev.source {
             Source::K8sEvent => api::Source::K8sEvent,
@@ -22,9 +23,54 @@ pub fn event(ev: &SecEvent) -> api::SecEvent {
         namespace: ev.namespace.clone(),
         object: ev.object.clone(),
         message: ev.message.clone(),
-        metadata: ev.metadata.clone(),
-        payload: ev.payload.clone(),
+        metadata,
+        payload,
     }
+}
+
+/// Metadata and payload without what the event already says elsewhere: on
+/// the wire every byte is paid once per event.
+fn trimmed(
+    ev: &SecEvent,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    serde_json::Value,
+) {
+    let mut metadata = ev.metadata.clone();
+    // `pod` and `container` are the object.
+    if let (Some(pod), Some(container)) = (metadata.get("pod"), metadata.get("container")) {
+        if ev.object.as_deref() == Some(&format!("{pod}/{container}")) {
+            metadata.remove("pod");
+            metadata.remove("container");
+        }
+    }
+    let mut payload = ev.payload.clone();
+    let dupes: &[&str] = match ev.source {
+        // pid, uid, comm are in the metadata, namespace / pod / container the
+        // event's own; the kernel's cgroup id is meaningless off the node.
+        Source::Ebpf => {
+            if payload.get("container_id").is_some() {
+                metadata.remove("container_id"); // its short form
+            }
+            &[
+                "pid",
+                "uid",
+                "comm",
+                "namespace",
+                "pod",
+                "container",
+                "cgroup_id",
+            ]
+        }
+        Source::Yara => &["artifact", "trigger", "pid"],
+        _ => &[],
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        for k in dupes {
+            obj.remove(*k);
+        }
+    }
+    (metadata, payload)
 }
 
 pub fn severity(s: Severity) -> api::Severity {
@@ -120,6 +166,46 @@ mod tests {
     use k3sec_inventory::{Package, Reachability};
 
     #[test]
+    fn ebpf_event_without_duplicates() {
+        let ev = SecEvent::builder(Source::Ebpf, chrono::Utc::now())
+            .kind("exec")
+            .namespace("cvss")
+            .object("writer/writer")
+            .message("exec /bin/sh (sh)")
+            .meta("pid", "7")
+            .meta("comm", "sh")
+            .meta("pod", "writer")
+            .meta("container", "writer")
+            .meta("container_id", "af282058b353")
+            .payload(
+                serde_json::json!({"pid": 7, "uid": 0, "comm": "sh", "cgroup_id": 9,
+                "container_id": "af282058b353e345", "path": "/bin/sh",
+                "namespace": "cvss", "pod": "writer", "container": "writer"}),
+            )
+            .build();
+        let w = event(&ev);
+        assert_eq!(
+            w.metadata.keys().collect::<Vec<_>>(),
+            ["comm", "pid"],
+            "pod/container are the object, the short id the payload's"
+        );
+        assert_eq!(
+            w.payload,
+            serde_json::json!({"container_id": "af282058b353e345", "path": "/bin/sh"})
+        );
+        // Off the eBPF path nothing of the payload goes.
+        let log = SecEvent::builder(Source::K8sLog, chrono::Utc::now())
+            .object("web/app")
+            .meta("pod", "other")
+            .meta("container", "app")
+            .payload(serde_json::json!({"pid": 1}))
+            .build();
+        let w = event(&log);
+        assert_eq!(w.metadata["pod"], "other", "not the object: kept");
+        assert_eq!(w.payload["pid"], 1);
+    }
+
+    #[test]
     fn event_keeps_every_field() {
         let ts = chrono::Utc
             .with_ymd_and_hms(2026, 10, 29, 12, 0, 0)
@@ -131,14 +217,15 @@ mod tests {
             .object("web-0/app")
             .message("YARA match")
             .meta("rules", "r")
-            .payload(serde_json::json!({"pid": 1}))
+            .meta("pid", "1")
+            .payload(serde_json::json!({"pid": 1, "matches": [{"rule": "r"}]}))
             .build();
         let w = event(&ev);
         assert_eq!(w.source, api::Source::Yara);
         assert_eq!(w.timestamp, ts.timestamp_millis());
         assert_eq!(w.severity, api::Severity::Critical);
         assert_eq!(w.metadata["rules"], "r");
-        assert_eq!(w.payload["pid"], 1);
+        assert_eq!(w.payload, serde_json::json!({"matches": [{"rule": "r"}]}));
     }
 
     #[test]
