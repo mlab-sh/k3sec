@@ -105,7 +105,12 @@ pub fn scan_image(
         }
     }
     packages.extend(runtimes);
-    let mut lang = lang::scan(&rootfs, &exes, limits);
+    let cwds: Vec<String> = pids
+        .iter()
+        .filter_map(|p| std::fs::read_link(format!("/proc/{p}/cwd")).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut lang = lang::scan(&rootfs, &exes, &cwds, limits);
     crate::reach::mark_running_binaries(&mut lang, &exes);
     // A language package whose own native code is mapped (a Python C extension).
     for p in lang

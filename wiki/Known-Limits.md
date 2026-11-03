@@ -28,9 +28,9 @@ What k3sec does **not** see yet, and how it shows up.
   `/home`…); a virtualenv elsewhere is missed. Pure-Python code is never
   "loaded" (imports are not mapped): only distributions with a mapped C
   extension are.
-- **Bounded lockfile search.** Usual app dirs only, depth 6, 50 000 entries,
+- **Bounded lockfile search.** Usual app dirs and the processes' working directories, depth 6, 200 000 entries,
   32 MiB per lockfile, 512 Go binaries and Java archives. `node_modules` is read through its
-  hidden lockfile only.
+  hidden lockfile, else module by module (20 000 at most).
 - **rpm**: `rpmdb.sqlite` (EL9+, Fedora, Hummingbird) and the Berkeley DB
   `Packages` (EL7 / EL8), only with `--features rpm`. NDB (SUSE) is not read. Go build info: Go ≥ 1.18.
 - **One root per image.** An image is inventoried from one of its containers;

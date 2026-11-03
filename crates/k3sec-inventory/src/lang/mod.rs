@@ -5,6 +5,7 @@
 pub mod gobuild;
 pub mod jar;
 pub mod lockfiles;
+pub mod npm;
 pub mod python;
 
 use std::collections::HashSet;
@@ -49,7 +50,8 @@ impl Default for LangLimits {
     fn default() -> Self {
         Self {
             max_depth: 6,
-            max_entries: 50_000,
+            // Home Assistant's site-packages alone has ~150 000 entries.
+            max_entries: 200_000,
             max_lockfile_size: 32 * 1024 * 1024,
             max_binary_size: 256 * 1024 * 1024,
             // A JVM keeps a few hundred jars open (Elasticsearch: ~250).
@@ -61,7 +63,16 @@ impl Default for LangLimits {
 /// Collect language deps from lockfiles under [`ROOTS`], from Go build info
 /// and Java archives in `executables` (in-container paths: the running
 /// binaries and the jars processes hold open) and in those met during the walk.
-pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Package> {
+///
+/// `roots` are walked too: the working directories of the container's
+/// processes, where an app lives when it is not under [`ROOTS`]
+/// (`/var/lib/ghost`, `/usr/src/redmine`).
+pub fn scan(
+    fs: &Rootfs,
+    executables: &[String],
+    roots: &[String],
+    limits: &LangLimits,
+) -> Vec<Package> {
     let mut walk = Walk {
         fs,
         limits,
@@ -69,11 +80,27 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         lockfiles: Vec::new(),
         binaries: executables.to_vec(),
         python: Vec::new(),
+        node_trees: Vec::new(),
     };
-    for root in ROOTS {
-        if let Some(canon) = fs.resolve(root) {
-            walk.dir(&canon, 0);
+    let mut walked: Vec<String> = Vec::new();
+    for root in ROOTS
+        .iter()
+        .copied()
+        .chain(roots.iter().map(String::as_str))
+    {
+        let Some(canon) = fs.resolve(root) else {
+            continue;
+        };
+        // `/` as a working directory would walk the whole image.
+        if canon == "/"
+            || walked
+                .iter()
+                .any(|w| canon.starts_with(&format!("{w}/")) || *w == canon)
+        {
+            continue;
         }
+        walk.dir(&canon, 0);
+        walked.push(canon);
     }
 
     let mut out = Vec::new();
@@ -95,6 +122,14 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         };
         for (name, version) in kind.parse(&content) {
             push(kind.ecosystem(), &name, &version, path, Vec::new());
+        }
+    }
+
+    // node_modules trees with no hidden lockfile: each module's package.json.
+    let mut budget = npm::MAX_PACKAGES;
+    for tree in &walk.node_trees {
+        for (name, version, at) in npm::modules(fs, tree, &mut budget) {
+            push("npm", &name, &version, &at, Vec::new());
         }
     }
 
@@ -165,6 +200,8 @@ struct Walk<'a> {
     binaries: Vec<String>,
     /// `*.dist-info` / `*.egg-info` directories.
     python: Vec<String>,
+    /// `node_modules` directories without npm's hidden lockfile.
+    node_trees: Vec<String>,
 }
 
 impl Walk<'_> {
@@ -191,14 +228,13 @@ impl Walk<'_> {
             if meta.is_dir() {
                 if name.ends_with(".dist-info") || name.ends_with(".egg-info") {
                     self.python.push(child);
-                } else if path.ends_with("/site-packages") || path.ends_with("/dist-packages") {
-                    // The distributions' own files: their dist-info says
-                    // what they are (thousands of entries otherwise).
                 } else if name == "node_modules" {
                     // npm ≥ 7's hidden lockfile describes the whole tree.
                     let hidden = format!("{child}/.package-lock.json");
                     if self.fs.exists(&hidden) {
                         self.lockfiles.push((hidden, Lockfile::PackageLock));
+                    } else {
+                        self.node_trees.push(child);
                     }
                 } else if !SKIP_DIRS.contains(&name.as_str()) {
                     self.dir(&child, depth + 1);
@@ -236,16 +272,13 @@ mod tests {
             "aiohttp/_parser.cpython-312-x86_64-linux-gnu.so,sha256=x,1\naiohttp/web.py,,\n",
         )
         .unwrap();
-        // A package's own tree is not walked: its lockfiles are vendored test data.
-        std::fs::create_dir_all(site.join("aiohttp/tests")).unwrap();
-        std::fs::write(site.join("aiohttp/tests/package-lock.json"), "{}").unwrap();
         let egg = dir
             .path()
             .join("opt/app/venv/lib/python3.12/site-packages/six-1.16.0.egg-info");
         std::fs::create_dir_all(&egg).unwrap();
         std::fs::write(egg.join("PKG-INFO"), "Name: six\nVersion: 1.16.0\n").unwrap();
 
-        let pkgs = scan(&Rootfs::new(dir.path()), &[], &LangLimits::default());
+        let pkgs = scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default());
         let aiohttp = pkgs.iter().find(|p| p.name == "aiohttp").unwrap();
         assert_eq!(aiohttp.purl, "pkg:pypi/aiohttp@3.9.1");
         assert_eq!(
@@ -253,7 +286,7 @@ mod tests {
             ["/usr/local/lib/python3.12/site-packages/aiohttp/_parser.cpython-312-x86_64-linux-gnu.so"]
         );
         assert!(pkgs.iter().any(|p| p.purl == "pkg:pypi/six@1.16.0"));
-        assert_eq!(pkgs.len(), 2, "no lockfile from inside a distribution");
+        assert_eq!(pkgs.len(), 2);
     }
 
     #[test]
@@ -275,7 +308,7 @@ mod tests {
         .unwrap();
         std::fs::copy(fx.join("Cargo.lock"), app.join("Cargo.lock")).unwrap();
 
-        let pkgs = scan(&Rootfs::new(dir.path()), &[], &LangLimits::default());
+        let pkgs = scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default());
         assert!(pkgs.iter().any(
             |p| p.name == "express" && p.location.as_deref() == Some("/app/package-lock.json")
         ));
@@ -299,9 +332,9 @@ mod tests {
             max_depth: 1,
             ..LangLimits::default()
         };
-        assert!(scan(&Rootfs::new(dir.path()), &[], &limits).is_empty());
+        assert!(scan(&Rootfs::new(dir.path()), &[], &[], &limits).is_empty());
         assert_eq!(
-            scan(&Rootfs::new(dir.path()), &[], &LangLimits::default()).len(),
+            scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default()).len(),
             1
         );
     }
