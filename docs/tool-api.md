@@ -35,7 +35,7 @@ The agent's local policy may restrict them (`[tools.k3sec] allowed_ops`).
 | `name` | Body | When |
 |---|---|---|
 | `batch` | `Batch` | runtime events, in order |
-| `status` | `Status` | every minute, and when the config or a source changes |
+| `status` | `Status` | within 10 s of a change (config, a source, versions), else every 150 s; `config.rules_source` is left out |
 | `inventory_ready` | `InventoryReady {digest, image, packages, loaded}` | an image was (re)inventoried; fetch it with `inventory` / `sbom` |
 
 Agent events are best effort (mlab-agent `docs/protocol.md` §6.4). The

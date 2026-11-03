@@ -35,7 +35,10 @@ use crate::stream::Stream;
 
 /// Batches are cut at least this often.
 const BATCH_INTERVAL: Duration = Duration::from_secs(2);
-const HEARTBEAT: Duration = Duration::from_secs(60);
+/// A status unchanged (counters aside) is sent again this often: under mlab's
+/// 180 s "silent node" mark. A change is sent within `STATUS_CHECK`.
+const HEARTBEAT: Duration = Duration::from_secs(150);
+const STATUS_CHECK: Duration = Duration::from_secs(10);
 /// Between the capture queue and the stream: the relay drops past this.
 const STREAM_QUEUE: usize = 8192;
 /// Frames waiting for stdout; events past this wait in the backlog.
@@ -149,7 +152,7 @@ pub fn serve_on(rt: &Handle, input: &mut dyn Read, output: Box<dyn Write + Send>
                 args,
                 blob_ok,
             } => {
-                let msg = match call(rt, &shared, &writer, &op, &args, blob_ok) {
+                let msg = match call(rt, &shared, &op, &args, blob_ok) {
                     Ok((body, blob_path)) => ToolMsg::Result {
                         id,
                         body,
@@ -473,14 +476,30 @@ async fn facts(client: Client, shared: Shared) {
 async fn heartbeat(shared: Shared, writer: Writer) {
     // The first one after the start-up facts (cluster id, node versions).
     tokio::time::sleep(Duration::from_secs(10)).await;
-    let mut tick = tokio::time::interval(HEARTBEAT);
+    let mut tick = tokio::time::interval(STATUS_CHECK);
+    let mut last: Option<(api::Status, std::time::Instant)> = None;
     loop {
         tick.tick().await;
         let Some(st) = shared.lock().ok().map(|s| status(&s)) else {
             return;
         };
+        let now = std::time::Instant::now();
+        if last.as_ref().is_some_and(|(prev, at)| {
+            now.duration_since(*at) < HEARTBEAT && same_but_tallies(prev, &st)
+        }) {
+            continue;
+        }
         writer.event(api::event::STATUS, &st);
+        last = Some((st, now));
     }
+}
+
+/// Equal but for the tallies, which move with every event and image: they
+/// ride along with the next heartbeat.
+fn same_but_tallies(a: &api::Status, b: &api::Status) -> bool {
+    let mut b = b.clone();
+    (b.counters, b.images) = (a.counters, a.images);
+    *a == b
 }
 
 fn status(s: &State) -> api::Status {
@@ -492,7 +511,11 @@ fn status(s: &State) -> api::Status {
         node: s.node.clone(),
         cluster_id: s.cluster_id.clone(),
         node_versions: s.node_versions.as_ref().map(convert::node_versions),
-        config: s.effective.config.clone(),
+        // Remote rules (up to 1 MiB) stay out: mlab has them, it pushed them.
+        config: api::Config {
+            rules_source: None,
+            ..s.effective.config.clone()
+        },
         allow: s.settings.allow(),
         allowed_namespaces: s.settings.namespaces.clone(),
         rulesets: s.settings.rulesets().into_iter().map(|(n, _)| n).collect(),
@@ -530,7 +553,6 @@ fn internal(e: impl std::fmt::Display) -> ErrorBody {
 fn call(
     rt: &Handle,
     shared: &Shared,
-    writer: &Writer,
     op_name: &str,
     raw: &[u8],
     blob_ok: bool,
@@ -566,7 +588,7 @@ fn call(
                 .clone()
                 .ok_or_else(|| internal("not initialized"))?;
             rt.block_on(restart(shared, &deps));
-            writer.event(api::event::STATUS, &status(&*lock()?));
+            // The heartbeat sends the new status within `STATUS_CHECK`.
             reply(&api::Configured {
                 config: clamped,
                 clamped: cut,
