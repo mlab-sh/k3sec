@@ -65,6 +65,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **.NET** `deps.json` (the runtimes themselves as NuGet runtime packs),
   **PEAR** packages (as `pear/<name>` on Packagist), the **WordPress** core
   (CPE) and its plugins, **Bitnami** components from their SPDX SBOMs.
+- **Drift**: running a binary from the container's writable layer (added or
+  changed after the container started) is a critical `exec`, with
+  `drift=true`.
+- **Process ancestry** on exec events (`ancestry` = `nginx > sh`, `ppid`), and
+  `exit` events (`--kind exit`).
+- **Suspicious execs**: fileless (memfd) and deleted binaries are critical;
+  hidden paths and temporary directories (`/tmp`, `/dev/shm`) are warnings.
+- **`secret_read`**: a process opening a service account token,
+  `/etc/shadow`, SSH keys or cloud and kubeconfig credentials.
+- **`escape`**: writes to `release_agent`, `core_pattern`, `modprobe` or
+  `uevent_helper`; connects to a container runtime socket; cgroup, kernel
+  interface (debugfs, bpf…) and disk mounts. Nothing reported when pods start.
+- **`privesc`**: a non-root process that becomes root (setuid).
+- **Network**: `listen`, `accept`, `dns` (with the name queried) and `udp`
+  (opt-in) events, from a `cgroup_skb` egress program. The DaemonSet now needs
+  `NET_ADMIN`.
+- **Cryptominers**: DNS queries for mining pools and miner binaries are
+  critical, stratum ports a warning; `rules/cryptominer.yar` catches a renamed
+  miner.
+- **YARA memory scans** after a suspicious exec: the process's anonymous
+  executable memory and its memfd and deleted mappings, so unpacked code is
+  matched too.
+- **MITRE ATT&CK** technique ids in `mitre` on eBPF events.
+- **`watch --detect <PATH>`**: your own detection rules, as JSON files. Each
+  rule has a CEL condition over the event and can raise its severity, add
+  MITRE ids or drop it. Rules reload when a file changes; a broken edit keeps
+  the rules in force.
+- **`watch --audit-log <PATH>`**: detections on the API server's audit log.
+  Critical: an anonymous request that went through, a cluster-admin grant, a
+  privileged or host-sharing pod or workload, `nodes/proxy`. Warning: exec,
+  attach or port-forward into a pod, secrets listed, tokens minted, a service
+  account probing its permissions, events deleted. On the wire to mlab.sh they
+  are `k8s-event`s with `kind: "audit"`.
 
 ### Fixed
 
