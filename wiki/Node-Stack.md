@@ -1,4 +1,4 @@
-# Node stack: k3s, containerd, kernel
+# Node stack: k3s, container runtime, kernel
 
 `k3sec vulns` also matches the node's own software, from
 `node.status.nodeInfo` (needs `get` / `list` on nodes). It shows up as a pseudo
@@ -9,6 +9,8 @@ image `node/<name>`, every component `loaded` (it's running).
 | k3s | `kubeletVersion` `v1.33.5+k3s1` | Go `github.com/k3s-io/k3s@v1.33.5+k3s1` (`k8s.io/kubernetes` on non-k3s nodes) |
 | k0s, EKS, GKE, … | `kubeletVersion` `v1.33.4+k0s`, `v1.30.4-eks-a737599` | Go `k8s.io/kubernetes@v1.33.4` (upstream kubelet: the vendor tag after `+` / `-` stripped) |
 | containerd | `containerRuntimeVersion` `containerd://2.1.4-k3s1` | Go `github.com/containerd/containerd/v2@v2.1.4` (the `-k3sN` suffix stripped; `…/containerd` for 1.x) |
+| CRI-O | `cri-o://1.30.4` | Go `github.com/cri-o/cri-o@v1.30.4` |
+| Docker (cri-dockerd) | `docker://24.0.5` | Go `github.com/moby/moby@v24.0.5+incompatible` |
 | kernel | `kernelVersion` `7.0.0-38-generic` | only with `--match-kernel`: CPE `cpe:2.3:o:linux:linux_kernel:7.0.0:…` against NVD |
 
 Real output, `sudo k3sec vulns`, node section:

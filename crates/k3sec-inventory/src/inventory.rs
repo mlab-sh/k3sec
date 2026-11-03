@@ -114,7 +114,8 @@ pub fn scan_image(
     })
 }
 
-/// The node's k3s / containerd (and, opt-in, kernel) as a pseudo-image.
+/// The node's k3s / kubelet, its runtime (containerd, CRI-O, Docker through
+/// cri-dockerd) and, opt-in, its kernel, as a pseudo-image.
 ///
 /// The kernel is matched by CPE against NVD, which knows nothing of distro
 /// backports: thousands of hits for any version, hence `match_kernel`.
@@ -163,6 +164,17 @@ pub fn node_inventory(v: &NodeVersions, match_kernel: bool) -> ImageInventory {
         };
         let mut p = go(module, &upstream);
         p.name = "containerd".into();
+        p.version = ver.to_string();
+        packages.push(p);
+    } else if let Some(ver) = v.container_runtime.strip_prefix("cri-o://") {
+        let mut p = go("github.com/cri-o/cri-o", &format!("v{ver}"));
+        p.name = "cri-o".into();
+        p.version = ver.to_string();
+        packages.push(p);
+    } else if let Some(ver) = v.container_runtime.strip_prefix("docker://") {
+        // cri-dockerd: the engine is Moby, a pre-modules Go project.
+        let mut p = go("github.com/moby/moby", &format!("v{ver}+incompatible"));
+        p.name = "docker".into();
         p.version = ver.to_string();
         packages.push(p);
     }
@@ -292,6 +304,38 @@ mod tests {
                 "github.com/containerd/containerd",
                 "v1.7.27"
             ))
+        );
+
+        let runtime = |r: &str| {
+            let inv = node_inventory(
+                &NodeVersions {
+                    container_runtime: r.into(),
+                    ..Default::default()
+                },
+                false,
+            );
+            let p = inv.packages.into_iter().next().unwrap();
+            (p.name, p.version, p.coordinate)
+        };
+        assert_eq!(
+            runtime("cri-o://1.30.4"),
+            (
+                "cri-o".into(),
+                "1.30.4".into(),
+                Some(Coordinate::eco("Go", "github.com/cri-o/cri-o", "v1.30.4"))
+            )
+        );
+        assert_eq!(
+            runtime("docker://24.0.5"),
+            (
+                "docker".into(),
+                "24.0.5".into(),
+                Some(Coordinate::eco(
+                    "Go",
+                    "github.com/moby/moby",
+                    "v24.0.5+incompatible"
+                ))
+            )
         );
 
         let eks = node_inventory(

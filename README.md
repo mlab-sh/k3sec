@@ -52,7 +52,7 @@ and cgroups and talks to the standard Kubernetes API.
 | Talos | Tested: `inventory`, `vulns`, `watch` |
 | EKS, GKE, AKS | Expected to work, not tested (not on Fargate / Autopilot: no `hostPID`) |
 | Docker host, no cluster (`--docker`) | Tested: `inventory`, `vulns`, `watch --ebpf` |
-| CRI-O / cri-dockerd nodes | Containers and events work; the runtime itself isn't version-matched |
+| CRI-O / cri-dockerd nodes | Containers, events and runtime version matching; not tested on a live node |
 
 Details on the [wiki home](https://github.com/mlab-sh/k3sec/wiki#cluster-compatibility).
 
