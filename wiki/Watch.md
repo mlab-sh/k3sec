@@ -71,6 +71,7 @@ stderr carries only diagnostics:
 | `--kind <exec,connect,file_write>` | Restrict eBPF events to these kinds | all |
 | `--node <NAME>` | Node name scoping pod resolution (`--ebpf`, `--vulns`) | `$NODE_NAME`, else all pods |
 | `--rules <PATH>` | [YARA](YARA-Detection) rules file/dir (needs `--ebpf`) | off |
+| `--audit-log <PATH>` | [API server audit log](Audit-Log) to follow for attacks on the cluster | off |
 | `--detect <PATH>` | [detection rules](eBPF-Probe#detection-rules---detect): CEL conditions that raise, tag (MITRE) or drop events, hot-reloaded | off |
 | `--max-scan-size <BYTES>` | Skip artifacts larger than this | 32 MiB |
 | `--scan-workers <N>` | YARA worker threads | CPU count |

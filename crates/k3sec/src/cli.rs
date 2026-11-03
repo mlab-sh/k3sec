@@ -14,7 +14,8 @@ use k3sec_core::{EventSource, OutputFormat, Printer, ScanRequest};
 use k3sec_engine::{DetectRules, DetectionEngine, EngineConfig};
 use k3sec_inventory::{check_root_access, ExecObservation, LangLimits, VulnWatcher};
 use k3sec_k8s::{
-    build_client, preflight, K8sEventSource, K8sLogSource, NodePodResolver, PodNotify,
+    build_client, preflight, AuditLogSource, K8sEventSource, K8sLogSource, NodePodResolver,
+    PodNotify,
 };
 use k3sec_probe::{EbpfSource, KindFilter, ProbeConfig, ProbeKind};
 
@@ -107,6 +108,12 @@ pub struct WatchArgs {
     #[arg(long, value_name = "PATH")]
     pub detect: Option<PathBuf>,
 
+    /// The API server's audit log (JSON lines), followed for attacks on the
+    /// cluster: exec into a pod, cluster-admin granted, privileged pods,
+    /// anonymous access… Read from its start with --rollback.
+    #[arg(long, value_name = "PATH")]
+    pub audit_log: Option<PathBuf>,
+
     /// Inventory + vulnerability-match each new pod image in the background,
     /// emitting `source: "vuln"` events (needs root). Existing pods only with
     /// --rollback. With --ebpf, exec'd binaries promote dormant packages.
@@ -139,8 +146,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchArgs) -> Result<()> {
     if engine.is_some() {
         anyhow::ensure!(
-            args.ebpf || args.logs || args.vulns,
-            "--docker / --podman have no events of their own: add --ebpf, --logs or --vulns"
+            args.ebpf || args.logs || args.vulns || args.audit_log.is_some(),
+            "--docker / --podman have no events of their own: add --ebpf, --logs, --vulns or --audit-log"
         );
     }
     if !args.kind.is_empty() && !args.ebpf {
@@ -265,6 +272,14 @@ async fn watch(kubeconfig: Option<PathBuf>, engine: Option<Engine>, args: WatchA
             };
             sources.push(Box::new(EbpfSource::new(config, resolver, scan_tx)));
         }
+    }
+
+    if let Some(path) = &args.audit_log {
+        sources.push(Box::new(AuditLogSource::new(
+            path.clone(),
+            args.namespace.clone(),
+            args.rollback,
+        )));
     }
 
     tracing::info!(

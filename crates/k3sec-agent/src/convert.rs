@@ -12,6 +12,9 @@ pub fn event(ev: &SecEvent) -> api::SecEvent {
             Source::Ebpf => api::Source::Ebpf,
             Source::Yara => api::Source::Yara,
             Source::Vuln => api::Source::Vuln,
+            // The v1 wire is frozen: an audit detection travels as a
+            // Kubernetes event, told apart by its kind (`audit`).
+            Source::K8sAudit => api::Source::K8sEvent,
         },
         timestamp: ev.timestamp.timestamp_millis(),
         kind: ev.kind.clone(),

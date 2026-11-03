@@ -6,7 +6,7 @@ may still change between milestones). The CBOR form sent to the mlab-agent is
 frozen as v1 in the `k3sec-api` crate, see [Tool API](Tool-API).
 
 ```text
-source     where it came from        k8s-event | k8s-log | ebpf | yara | vuln
+source     where it came from        k8s-event | k8s-log | ebpf | yara | vuln | k8s-audit
 timestamp  when it happened          RFC 3339, UTC
 kind       type discriminator        event reason | log | exec | connect | file_write | detection | vulnerability | vuln_summary
 severity   normalized severity       info | normal | warning | error | critical
@@ -123,6 +123,13 @@ In `metadata`, `vulns` / `loaded` / `kev_loaded` count **findings**; in
 `payload`, `loaded` / `dormant` / `unknown` count **packages**. `error` is set
 when matching failed (the summary then says "vulnerability matching
 unavailable").
+
+## k8s-audit
+
+`kind: "audit"`. `metadata`: `user`, `verb`, `resource` (`pods/exec`),
+`source_ip`, `user_agent`, `code`, `mitre`. `payload`: the audit record. Sent
+to mlab.sh as a `k8s-event` (the v1 wire is frozen), told apart by its kind.
+See [Audit log detections](Audit-Log).
 
 ## Filtering recipes
 

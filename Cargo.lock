@@ -2249,6 +2249,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

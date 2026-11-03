@@ -38,6 +38,8 @@ pub enum Source {
     Yara,
     /// A runtime-aware vulnerability finding from the inventory + matching.
     Vuln,
+    /// A detection on the API server's audit log (`--audit-log`).
+    K8sAudit,
 }
 
 /// Normalized severity, comparable across sources.

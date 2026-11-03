@@ -2,16 +2,19 @@
 //!
 //! * [`events::K8sEventSource`]: watches core/v1 `Event`s (no polling).
 //! * [`logs::K8sLogSource`]: follows pod container logs.
+//! * [`audit::AuditLogSource`]: detections on the API server's audit log.
 //!
 //! [`build_client`] / [`preflight`] handle connection setup and up-front,
 //! readable error reporting for kubeconfig / connectivity / RBAC problems.
 
+pub mod audit;
 pub mod client;
 pub mod events;
 pub mod logs;
 pub mod resolver;
 pub mod workload;
 
+pub use audit::AuditLogSource;
 pub use client::{build_client, build_incluster_client, preflight, Backoff};
 pub use events::K8sEventSource;
 pub use logs::K8sLogSource;

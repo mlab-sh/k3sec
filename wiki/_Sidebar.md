@@ -10,6 +10,7 @@
 **Live stream**
 - [eBPF probe](eBPF-Probe)
 - [YARA detection](YARA-Detection)
+- [Audit log detections](Audit-Log)
 - [watch --vulns](Watch-Vulns)
 - [SecEvent schema](SecEvent-Schema)
 - [Tool API (mlab-agent)](Tool-API)
