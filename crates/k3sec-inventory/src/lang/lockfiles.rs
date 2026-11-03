@@ -200,7 +200,14 @@ fn gemfile_lock(content: &str) -> Vec<(String, String)> {
         }
         if let Some(spec) = line.strip_prefix("    ") {
             if let Some((name, rest)) = spec.split_once(" (") {
-                out.push((name.to_string(), rest.trim_end_matches(')').to_string()));
+                // `2.3.2-x86_64-linux`: the platform follows a dash, the
+                // version itself has none (prereleases use dots).
+                let version = rest.trim_end_matches(')');
+                let version = version.split_once('-').map_or(version, |(v, _)| v);
+                let entry = (name.to_string(), version.to_string());
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
             }
         }
     }
@@ -296,11 +303,24 @@ mod tests {
         );
         let g = fixture("Gemfile.lock");
         assert!(has(&g, "rails", "7.1.3"));
-        assert!(has(&g, "nokogiri", "1.16.2-x86_64-linux"));
+        // The platform is dropped: advisories name the version alone.
+        assert!(has(&g, "nokogiri", "1.16.2"));
         assert!(
             !g.iter()
                 .any(|(_, v)| v.starts_with('=') || v.starts_with('>')),
             "nested requirement lines are not specs"
+        );
+    }
+
+    #[test]
+    fn gemfile_lock_platform_variants_are_one_version() {
+        let lock = "GEM\n  remote: https://rubygems.org/\n  specs:\n    commonmarker (2.3.2)\n    commonmarker (2.3.2-x86_64-linux)\n    commonmarker (2.3.2-arm64-darwin)\n    rails (8.0.0.beta1)\n";
+        assert_eq!(
+            gemfile_lock(lock),
+            [
+                ("commonmarker".to_string(), "2.3.2".to_string()),
+                ("rails".to_string(), "8.0.0.beta1".to_string())
+            ]
         );
     }
 }

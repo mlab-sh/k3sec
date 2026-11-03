@@ -85,7 +85,8 @@ scoped and nested ones included, 20 000 modules at most (Ghost: 2 301).
 | `poetry.lock` | PyPI | `[[package]]` |
 | `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` | PyPI | `Name` / `Version`; `RECORD` lists the files, a mapped `.so` makes the distribution **loaded**. Inside `site-packages` only these are read (Home Assistant: 1 627 distributions) |
 | `composer.lock` | Packagist | `packages` + `packages-dev` |
-| `Gemfile.lock` | RubyGems | top-level `GEM` specs |
+| `Gemfile.lock` | RubyGems | top-level `GEM` specs, the platform suffix dropped (`2.3.2-x86_64-linux` is `2.3.2`); when installed gems are found, only the entries installed (a lockfile also names its `development` / `test` groups). An installed gem's own `Gemfile.lock` is ignored |
+| `specifications/*.gemspec` | RubyGems | installed gems, `default/` included (Ruby's own): the `# stub:` line. `ruby:3.3`: 86, as syft |
 | **Go binaries** | Go | build info (Go ≥ 1.18): every module **and** the Go `stdlib` version |
 | **Rust binaries** (`cargo auditable`) | crates.io | the `.dep-v0` section (zlib JSON): every registry crate (`uv`: 481, a conda extension: 514). Rust libraries a distro package ships (`librav1e`) are left to the package |
 | **Java archives** (`.jar`, `.war`, `.ear`, `.hpi`, `.jpi`) | Maven | `META-INF/maven/<group>/<artifact>/pom.properties`, in the archive and in the archives it nests, two levels deep (`BOOT-INF/lib/`, `WEB-INF/lib/`). Jenkins plugins: `Group-Id` / `Short-Name` / `Plugin-Version` of the manifest. Without either, the file name and `Implementation-Version` / `Bundle-Version`; the group from a short list of projects that publish no `pom.properties` (Spring, Ant, Groovy, Guice, JNA, dom4j, Lucene, Elasticsearch, Kotlin), else listed without a group and not matched. Spring Boot app: Spring4Shell (`CVE-2022-22965`) found this way |

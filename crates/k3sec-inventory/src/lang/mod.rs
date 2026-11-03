@@ -2,6 +2,7 @@
 //! directories for lockfiles, plus Go build info from executables and Maven
 //! coordinates from Java archives.
 
+pub mod gems;
 pub mod gobuild;
 pub mod jar;
 pub mod lockfiles;
@@ -32,6 +33,7 @@ const ROOTS: &[&str] = &[
     "/code",
     "/usr/local/bin",
     "/usr/local/lib",
+    "/usr/local/bundle",
     // Go and Rust binaries anywhere on the PATH, running or not: only their
     // build info section is read (mongosh in /usr/bin, the Go toolchain).
     "/usr/local/go",
@@ -101,6 +103,7 @@ pub fn scan(
         binaries: executables.to_vec(),
         python: Vec::new(),
         node_trees: Vec::new(),
+        gemspecs: Vec::new(),
     };
     let mut walked: Vec<String> = Vec::new();
     for root in ROOTS
@@ -136,11 +139,32 @@ pub fn scan(
         }
     };
 
+    // Installed gems first: when there are some, a Gemfile.lock entry that
+    // is not installed belongs to a group left out (`development`, `test`).
+    let installed_gems: Vec<(String, String, &String)> = walk
+        .gemspecs
+        .iter()
+        .filter_map(|spec| {
+            let (n, v) = gems::gemspec(&fs.read_string(spec, 1024 * 1024).ok()?)?;
+            Some((n, v, spec))
+        })
+        .collect();
+    let gem_names: HashSet<&str> = installed_gems.iter().map(|(n, _, _)| n.as_str()).collect();
+    for (name, version, spec) in &installed_gems {
+        push("RubyGems", name, version, spec, Vec::new());
+    }
+
     for (path, kind) in &walk.lockfiles {
         let Ok(content) = fs.read_string(path, limits.max_lockfile_size) else {
             continue;
         };
         for (name, version) in kind.parse(&content) {
+            if kind == &Lockfile::GemfileLock
+                && !gem_names.is_empty()
+                && !gem_names.contains(name.as_str())
+            {
+                continue;
+            }
             push(kind.ecosystem(), &name, &version, path, Vec::new());
         }
     }
@@ -238,6 +262,8 @@ struct Walk<'a> {
     python: Vec<String>,
     /// `node_modules` directories without npm's hidden lockfile.
     node_trees: Vec<String>,
+    /// Installed gems' `specifications/*.gemspec`.
+    gemspecs: Vec<String>,
 }
 
 impl Walk<'_> {
@@ -279,7 +305,13 @@ impl Walk<'_> {
                 }
             } else if meta.is_file() {
                 if let Some(kind) = Lockfile::from_name(&name) {
-                    self.lockfiles.push((child, kind));
+                    // An installed gem's own lockfile lists what its authors
+                    // develop with, not what is installed.
+                    if !gems::inside_installed_gem(&child) {
+                        self.lockfiles.push((child, kind));
+                    }
+                } else if gems::is_installed_gemspec(&child) {
+                    self.gemspecs.push(child);
                 } else if meta.permissions().mode() & 0o111 != 0
                     || (is_java_archive(&name) && meta.len() <= self.limits.max_binary_size)
                 {
@@ -325,6 +357,49 @@ mod tests {
         );
         assert!(pkgs.iter().any(|p| p.purl == "pkg:pypi/six@1.16.0"));
         assert_eq!(pkgs.len(), 2);
+    }
+
+    #[test]
+    fn installed_gems_win_over_lockfile_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("usr/src/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("Gemfile.lock"),
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.1.0)\n    bullet (8.3.1)\n\nPLATFORMS\n  ruby\n",
+        )
+        .unwrap();
+        let specs = dir.path().join("usr/local/bundle/specifications");
+        std::fs::create_dir_all(&specs).unwrap();
+        std::fs::write(
+            specs.join("rails-7.1.0.gemspec"),
+            "# stub: rails 7.1.0 ruby lib\n",
+        )
+        .unwrap();
+        std::fs::write(
+            specs.join("pg-1.5.9.gemspec"),
+            "# stub: pg 1.5.9 ruby lib\n",
+        )
+        .unwrap();
+        // The lockfile inside an installed gem is its authors' development one.
+        let gem = dir.path().join("usr/local/bundle/gems/rails-7.1.0");
+        std::fs::create_dir_all(&gem).unwrap();
+        std::fs::write(
+            gem.join("Gemfile.lock"),
+            "GEM\n  specs:\n    rubocop (1.0.0)\n",
+        )
+        .unwrap();
+
+        let mut got: Vec<String> = scan(&Rootfs::new(dir.path()), &[], &[], &LangLimits::default())
+            .into_iter()
+            .map(|p| format!("{}@{}", p.name, p.version))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            ["pg@1.5.9", "rails@7.1.0"],
+            "bullet is a dev group gem, not installed"
+        );
     }
 
     #[test]
