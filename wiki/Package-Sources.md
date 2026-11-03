@@ -86,7 +86,9 @@ whole tree.
 Lockfiles over 32 MiB are skipped. Go build info and Java archives are read
 from what runs first (`/proc/<pid>/exe`, and the jars a JVM holds open in
 `/proc/<pid>/fd`, which are therefore **loaded**), then from executables and
-archives met in the walk, 512 at most, 256 MiB each. A jar without
+archives met in the walk, 512 at most. Of an ELF only its `.go.buildinfo`
+section is read, whatever the binary's size (Vault: 550 MiB, 496 modules);
+other files are read whole, 256 MiB at most. A jar without
 `pom.properties` is not identified: Tomcat's own `catalina.jar` and the like.
 
 On the lab:

@@ -105,8 +105,13 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
         let Some(host) = fs.host_path(path) else {
             continue;
         };
-        let Ok(bytes) = read_file_limited(&host, limits.max_binary_size) else {
-            continue;
+        // An ELF's build info section alone, whatever the binary's size.
+        let bytes = match gobuild::section(&host) {
+            Some(section) => section,
+            None => match read_file_limited(&host, limits.max_binary_size) {
+                Ok(b) => b,
+                Err(_) => continue,
+            },
         };
         if bytes.starts_with(b"PK\x03\x04") {
             for (name, version) in jar::parse(&bytes) {
@@ -114,7 +119,7 @@ pub fn scan(fs: &Rootfs, executables: &[String], limits: &LangLimits) -> Vec<Pac
             }
             continue;
         }
-        if !bytes.starts_with(b"\x7fELF") {
+        if !bytes.starts_with(b"\x7fELF") && !bytes.starts_with(gobuild::MAGIC) {
             continue;
         }
         if let Some(info) = gobuild::parse(&bytes) {
@@ -175,8 +180,8 @@ impl Walk<'_> {
             } else if meta.is_file() {
                 if let Some(kind) = Lockfile::from_name(&name) {
                     self.lockfiles.push((child, kind));
-                } else if (is_java_archive(&name) || meta.permissions().mode() & 0o111 != 0)
-                    && meta.len() <= self.limits.max_binary_size
+                } else if meta.permissions().mode() & 0o111 != 0
+                    || (is_java_archive(&name) && meta.len() <= self.limits.max_binary_size)
                 {
                     self.binaries.push(child);
                 }
